@@ -38,7 +38,7 @@
 
 use std::{net::SocketAddr, thread};
 
-use common::{create_logger, UnrealCommand, UnrealInterfaceMessage, DEFAULT_PORT, PORT_VAR};
+use common::{create_logger, UnrealCommand, UnrealInterfaceMessage, DEFAULT_PORT, DEFAULT_PORT_TRY_NUM, PORT_TRY_NUM_VAR, PORT_VAR};
 use futures::prelude::*;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -140,6 +140,49 @@ fn determine_port() -> u16 {
     DEFAULT_PORT
 }
 
+/// Determine the number of times to try to bind to a port before giving up.
+fn determine_try_num() -> u16 {
+    if let Ok(str) = std::env::var(PORT_TRY_NUM_VAR) {
+        match str.parse::<u16>() {
+            Ok(v) => {
+                return v;
+            }
+            Err(_) => {
+                log::error!("Bad try_num value in TRY_NUM: {str}");
+            }
+        }
+    }
+
+    DEFAULT_PORT_TRY_NUM
+}
+
+/// Create a TPC connection. If the connection is already occupied, try the next port until it reaches try_num times and return an error. 
+/// For other errors, return directly
+async fn create_tcp_listener(mut addr:SocketAddr,base_port:u16,mut try_num:u16) -> tokio::io::Result<TcpListener> {
+    let mut port = base_port;
+    addr.set_port(port);
+    while try_num > 0
+    {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => {
+                return Ok(listener);
+            }
+            Err(e) => {
+                if !matches!(e.kind(), std::io::ErrorKind::AddrInUse)
+                {
+                    log::error!("Failed to bind to port {port}: {e}");
+                    return Err(e);
+                }
+            }
+        }
+        try_num -= 1;
+        port += 1;
+        addr.set_port(port);
+    }
+
+    return Err(tokio::io::Error::new(tokio::io::ErrorKind::AddrInUse, "Failed to bind to port"));
+}
+
 /// The main worker thread for the debugger interface. This is created when the
 /// debugger session is created, and returns when the debugger session ends.
 async fn main_loop(
@@ -154,7 +197,8 @@ async fn main_loop(
         .parse()
         .expect("Failed to parse address");
 
-    let server = TcpListener::bind(addr).await?;
+    let server = create_tcp_listener(addr,port,determine_try_num()).await?;
+
     loop {
         select! {
             conn = server.accept() => {

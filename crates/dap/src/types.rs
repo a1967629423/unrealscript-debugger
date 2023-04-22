@@ -14,6 +14,8 @@ pub struct Capabilities {
     /// The client may request the stack trace to be sent in chunks instead of
     /// all at once.
     pub supports_delayed_stack_trace_loading: bool,
+    /// make VS Code use 'evaluate' when hovering over source.
+    pub supports_evaluate_for_hovers: bool,
 }
 
 /// Breakpoints are sent as part of the [`crate::responses::ResponseBody::SetBreakpoints`] response.
@@ -126,7 +128,7 @@ pub struct SourceBreakpoint {
 /// This type does not appear in DAP directly and should always be flattened
 /// in any type that uses it. The purpose of this struct is only to make it
 /// easier to serialize certain data structures we sent to the client.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 pub struct VariableReferenceInfo {
     /// The variable reference, a number that uniquely identifies this variable. The
     /// number persists only as long as the debugger remains stopped. The client may use

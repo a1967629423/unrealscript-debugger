@@ -16,17 +16,23 @@
 
 #![warn(missing_docs)]
 
-use std::{fmt::Display, path::PathBuf};
+use std::{fmt::Display, path::PathBuf, time::Duration};
 
-use flexi_logger::{Duplicate, FileSpec, FlexiLoggerError, Logger, LoggerHandle};
+use flexi_logger::{Duplicate, FileSpec, FlexiLoggerError, LogSpecification, Logger, LoggerHandle};
 use serde::{Deserialize, Serialize};
 
 /// The default port to use for the TCP connection between the interface and
 /// adapter.
 pub const DEFAULT_PORT: u16 = 18777u16;
 
+/// The default number of times to try to connect to the port.
+pub const DEFAULT_PORT_TRY_NUM: u16 = 16u16;
+
 /// An environment variable to specify the port to use.
 pub const PORT_VAR: &str = "UCDEBUGGER_PORT";
+
+/// An environment variable to specify the number of times to try to connect
+pub const PORT_TRY_NUM_VAR: &str = "UCDEBUGGER_PORT_TRY_NUM";
 
 /// An environment variable to specify the default directory for logfiles.
 ///
@@ -43,6 +49,12 @@ pub const LOG_LEVEL_VAR: &str = "UCDEBUGGER_LOGLEVEL";
 
 /// The subdirectory in which to put log files if LOG_DIR_VAR is not set.
 pub const LOG_DEFAULT_SUBDIR: &str = "unrealscript-debugger";
+
+/// The default connection attempts to make.
+pub const DEFAULT_CONNECT_ATTEMPTS: u32 = 10;
+
+/// The default amount of time to wait between each connection attempt.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// An error indicating a particular value (such as a frame or variable index)
 /// is out of range.
@@ -391,14 +403,19 @@ fn log_dir() -> Option<PathBuf> {
     // If not set try the %TEMP% dir and then the current dir in that order, and add the default
     // subdir to either of these.
     if log_dir.is_none() {
-        log_dir = std::env::var("TEMP")
-            .ok()
-            .map(PathBuf::from)
-            .or(std::env::current_dir().ok())
-            .map(|mut d| {
-                d.push(LOG_DEFAULT_SUBDIR);
-                d
-            });
+        // log_dir = std::env::var("TEMP")
+        //     .ok()
+        //     .map(PathBuf::from)
+        //     .or(std::env::current_dir().ok())
+        //     .map(|mut d| {
+        //         d.push(LOG_DEFAULT_SUBDIR);
+        //         d
+        //     });
+        log_dir = std::env::current_dir().ok()
+        .map(|mut d| {
+            d.push(LOG_DEFAULT_SUBDIR);
+            d
+        });
     }
 
     log_dir
@@ -434,8 +451,7 @@ pub fn create_logger(basename: &str) -> LoggerHandle {
     match create_custom_logger(basename) {
         Ok(logger) => logger,
         Err(e) => {
-            let logger = Logger::try_with_str("warn")
-                .unwrap()
+            let logger = Logger::with(LogSpecification::env_or_parse("warn").unwrap())
                 .log_to_file(FileSpec::default().basename(basename))
                 .duplicate_to_stderr(Duplicate::All)
                 .start()

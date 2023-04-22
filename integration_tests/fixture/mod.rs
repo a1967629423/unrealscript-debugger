@@ -1,7 +1,7 @@
 use adapter::{
     client::{Client, ClientImpl},
     client_config::ClientConfig,
-    comm::tcp::TcpConnection,
+    comm::tcp::{TcpConnectTimeoutConfig, TcpConnection},
     connected_adapter::UnrealscriptAdapter,
     AdapterMessage,
 };
@@ -61,7 +61,7 @@ pub async fn setup_with_client<C: Client>(
             enable_stack_hack: false,
             auto_resume: false,
         },
-        Box::new(TcpConnection::connect(port, sender).unwrap()),
+        Box::new(TcpConnection::connect(port, sender,TcpConnectTimeoutConfig::default()).unwrap()),
         None,
         None,
     );
