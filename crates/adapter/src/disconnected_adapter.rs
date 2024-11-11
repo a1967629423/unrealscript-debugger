@@ -163,6 +163,7 @@ impl<C: Client> DisconnectedAdapter<C> {
             ResponseBody::Initialize(Some(Capabilities {
                 supports_configuration_done_request: true,
                 supports_delayed_stack_trace_loading: true,
+                supports_evaluate_for_hovers:true,
             })),
         ))?;
         Ok(())
