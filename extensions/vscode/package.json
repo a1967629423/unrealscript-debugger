@@ -93,7 +93,7 @@
                                 "minimum": 1
                             },
                             "connectTimeoutSeconds": {
-                                "type": "float",
+                                "type": "number",
                                 "description": "timeout in seconds for each connection attempt",
                                 "minimum": 0.1
                             }
