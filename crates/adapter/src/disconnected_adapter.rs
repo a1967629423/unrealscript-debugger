@@ -19,7 +19,7 @@ use dap::{
 use flexi_logger::LogSpecification;
 
 use crate::{
-    client::Client, client_config::ClientConfig, comm::tcp::TcpConnection,
+    client::Client, client_config::ClientConfig, comm::tcp::{TcpConnectTimeoutConfig, TcpConnection},
     connected_adapter::UnrealscriptAdapter, AdapterMessage, UnrealscriptAdapterError, _LOGGER,
 };
 
@@ -171,12 +171,12 @@ impl<C: Client> DisconnectedAdapter<C> {
 
     /// Connect to the debugger interface. When connected this will send an 'initialized' event to
     /// DAP. This is shared by both the 'launch' and 'attach' requests.
-    fn connect_to_interface(&self, port: u16) -> Result<TcpConnection, UnrealscriptAdapterError> {
+    fn connect_to_interface(&self, port: u16,timeout_config:TcpConnectTimeoutConfig) -> Result<TcpConnection, UnrealscriptAdapterError> {
         log::info!("Connecting to port {port}");
 
         // Connect to the Unrealscript interface and set up the communications channel between
         // it and this adapter.
-        Ok(TcpConnection::connect(port, self.sender.clone())?)
+        Ok(TcpConnection::connect(port, self.sender.clone(),timeout_config)?)
     }
 
     /// Attach to a running unreal process.
@@ -215,7 +215,7 @@ impl<C: Client> DisconnectedAdapter<C> {
         let port = DEFAULT_PORT;
         self.config.source_roots = args.source_roots.clone().unwrap_or_default();
         self.config.enable_stack_hack = args.enable_stack_hack.unwrap_or(true);
-        match self.connect_to_interface(port) {
+        match self.connect_to_interface(port,TcpConnectTimeoutConfig::default()) {
             Ok(connection) => {
                 // Connection succeeded: Respond with a success response and return
                 // the connected adapter.
@@ -375,7 +375,7 @@ impl<C: Client> DisconnectedAdapter<C> {
             Ok(child) => {
                 // If we're auto-debugging we can now connect to the interface.
                 if auto_debug {
-                    match self.connect_to_interface(port) {
+                    match self.connect_to_interface(port,TcpConnectTimeoutConfig::new_from_args(args.connect_attempts,args.connect_timeout_seconds)) {
                         Ok(connection) => {
                             // Send a response ack for the launch request.
                             self.client.respond(Response::make_ack(req))?;

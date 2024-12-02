@@ -152,6 +152,10 @@ pub struct LaunchArguments {
     pub port: Option<i64>,
     /// If true, auto-resume after the first implicit breakpoint is hit.
     pub auto_resume: Option<bool>,
+    /// The connection attempts to make.
+    pub connect_attempts: Option<u32>,
+    /// The connection timeout in seconds.
+    pub connect_timeout_seconds:Option<f32>
 }
 
 /// Arguments for a [`Command::Scopes`] request.

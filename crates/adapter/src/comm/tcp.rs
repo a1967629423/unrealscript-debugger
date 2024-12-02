@@ -7,16 +7,12 @@ use std::{
     time::Duration,
 };
 
-use common::{UnrealCommand, UnrealInterfaceMessage, UnrealResponse};
+use common::{UnrealCommand, UnrealInterfaceMessage, UnrealResponse, DEFAULT_CONNECT_ATTEMPTS, DEFAULT_CONNECT_TIMEOUT};
 
 use crate::AdapterMessage;
 
 use super::Connection;
 
-/// The number of connection attempts to make
-const CONNECT_ATTEMPTS: i32 = 10;
-// The amount of time to wait between each connection
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A TCP-based connection between the debug adapter and the Unreal debugger
 /// interface.
@@ -25,25 +21,35 @@ pub struct TcpConnection {
     response_receiver: Receiver<UnrealResponse>,
 }
 
+/// The configuration for the TCP connection timeout.
+#[derive(Debug,Clone)]
+pub struct TcpConnectTimeoutConfig {
+    /// The number of connection attempts to make before giving up.
+    pub connect_attempts: u32,
+    /// The duration to wait between connection attempts.
+    pub connect_timeout: Duration,
+}
+
 impl TcpConnection {
     /// Connect to an unreal debugger adapter running at the given port number on the local computer.
     pub fn connect(
         port: u16,
         event_sender: Sender<AdapterMessage>,
+        timeout_config:TcpConnectTimeoutConfig,
     ) -> Result<TcpConnection, Error> {
         let mut tcp: Option<TcpStream> = None;
 
         // Try to connect, sleeping between attempts. This sleep is intended to give
         // enough time for a launched Unreal process to get to the point where the
         // interface has opened the listening socket.
-        for _ in 0..CONNECT_ATTEMPTS {
+        for _ in 0..timeout_config.connect_attempts {
             match TcpStream::connect(format!("127.0.0.1:{port}")) {
                 Ok(s) => {
                     tcp = Some(s);
                     break;
                 }
                 Err(_) => {
-                    std::thread::sleep(CONNECT_TIMEOUT);
+                    std::thread::sleep(timeout_config.connect_timeout);
                 }
             }
         }
@@ -151,6 +157,25 @@ fn debuggee_tcp_loop(
                 }
                 return;
             }
+        }
+    }
+}
+
+impl TcpConnectTimeoutConfig {
+    /// Create a new TcpConnectTimeoutConfig with the given number of connection attempts and timeout duration.
+    pub fn new_from_args(attempts:Option<u32>,timeout_sec:Option<f32>) -> Self {
+        Self {
+            connect_attempts: attempts.unwrap_or(DEFAULT_CONNECT_ATTEMPTS),
+            connect_timeout: timeout_sec.map(|timeout_sec| Duration::from_secs_f32(timeout_sec)).unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+        }
+    }
+}
+
+impl Default for TcpConnectTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_attempts: DEFAULT_CONNECT_ATTEMPTS,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
         }
     }
 }

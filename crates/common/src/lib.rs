@@ -16,7 +16,7 @@
 
 #![warn(missing_docs)]
 
-use std::{fmt::Display, path::PathBuf};
+use std::{fmt::Display, path::PathBuf, time::Duration};
 
 use flexi_logger::{Duplicate, FileSpec, FlexiLoggerError, LogSpecification, Logger, LoggerHandle};
 use serde::{Deserialize, Serialize};
@@ -49,6 +49,12 @@ pub const LOG_LEVEL_VAR: &str = "UCDEBUGGER_LOGLEVEL";
 
 /// The subdirectory in which to put log files if LOG_DIR_VAR is not set.
 pub const LOG_DEFAULT_SUBDIR: &str = "unrealscript-debugger";
+
+/// The default connection attempts to make.
+pub const DEFAULT_CONNECT_ATTEMPTS: u32 = 10;
+
+/// The default amount of time to wait between each connection attempt.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// An error indicating a particular value (such as a frame or variable index)
 /// is out of range.

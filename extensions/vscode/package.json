@@ -10,7 +10,6 @@
     "author": {
         "name": "tracktwo"
     },
-    "license": "MIT",
     "engines": {
         "vscode": "^1.74.0"
     },
@@ -87,6 +86,16 @@
                             "autoResume": {
                                 "type": "boolean",
                                 "description": "auto-resume after the automatic first breakpoint after launch"
+                            },
+                            "connectAttempts": {
+                                "type": "integer",
+                                "description": "number of attempts to connect to the interface",
+                                "minimum": 1
+                            },
+                            "connectTimeoutSeconds": {
+                                "type": "float",
+                                "description": "timeout in seconds for each connection attempt",
+                                "minimum": 0.1
                             }
                         }
                     }
