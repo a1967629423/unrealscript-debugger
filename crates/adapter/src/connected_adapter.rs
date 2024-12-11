@@ -227,7 +227,10 @@ fn is_string_str(c: &str) -> bool {
 }
 
 fn is_invalid_expression(expression: &str) -> bool {
-    expression.is_empty() || is_number_str(expression) || is_string_str(expression) || UC_KEYWORDS.contains(&expression)
+    expression.is_empty()
+        || is_number_str(expression)
+        || is_string_str(expression)
+        || UC_KEYWORDS.contains(&expression)
 }
 
 // Information about a class.
@@ -745,8 +748,6 @@ where
             ],
         }))
     }
-
-
 
     fn evaluate(
         &mut self,

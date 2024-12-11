@@ -49,12 +49,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
-use crate::{get_game_runtime_mut, is_game_runtime_in_break};
 use crate::{
     api::{UnrealCallback, UnrealVADebugCallback},
-    debugger::{CommandAction, Debugger, DebuggerError}, DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
+    debugger::{CommandAction, Debugger, DebuggerError},
+    DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
 };
-use async_compat::{Compat,CompatExt};
+use crate::{get_game_runtime_mut, is_game_runtime_in_break};
+use async_compat::{Compat, CompatExt};
 
 /// Initialize the debugger instance. This should be called exactly once when
 /// Unreal first initializes us. Responsible for building the shared state object
@@ -291,7 +292,7 @@ async fn main_loop(
         .expect("Failed to parse address");
 
     let server = create_tcp_listener(addr, port, determine_try_num()).await?;
-    
+
     log::trace!("create server success");
 
     loop {
@@ -315,7 +316,10 @@ async fn main_loop(
     Ok(())
 }
 
-async fn va_main_loop(cb:UnrealVADebugCallback,mut crx: UnboundedReceiver<()>) -> Result<(),std::io::Error> {
+async fn va_main_loop(
+    cb: UnrealVADebugCallback,
+    mut crx: UnboundedReceiver<()>,
+) -> Result<(), std::io::Error> {
     let port = determine_port();
 
     log::info!("Listening for connections on port {port}");
@@ -386,13 +390,13 @@ impl SendToUnreal for VaDebugSendToUnreal {
             get_game_runtime_mut().spawn(async move {
                 let mut bytes = str.encode_utf16().collect::<Vec<_>>();
                 bytes.push(0);
-                (game_callback)(0,bytes.as_ptr());
+                (game_callback)(0, bytes.as_ptr());
             });
             return;
         }
         let mut bytes = str.encode_utf16().collect::<Vec<_>>();
         bytes.push(0);
-        (game_callback)(0,bytes.as_ptr());
+        (game_callback)(0, bytes.as_ptr());
     }
 }
 
@@ -401,7 +405,7 @@ impl SendToUnreal for VaDebugSendToUnreal {
 ///
 /// We accept only a single connection at a time, if multiple adapters attempt to connect
 /// we'll process them in sequence.
-async fn handle_connection<T:SendToUnreal>(
+async fn handle_connection<T: SendToUnreal>(
     stream: &mut TcpStream,
     cb: T,
     crx: &mut UnboundedReceiver<()>,

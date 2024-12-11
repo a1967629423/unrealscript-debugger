@@ -22,7 +22,7 @@ use common::{Frame, WatchKind};
 
 use crate::api::VACMD;
 use crate::stackhack::{StackHack, DEFAULT_MODEL};
-use crate::{ set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
+use crate::{set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
 
 const MAGIC_DISCONNECT_STRING: &str = "Log: Detaching UnrealScript Debugger (currently detached)";
 
@@ -81,7 +81,7 @@ enum PendingVariableRequest {
 }
 
 /// A variable watch.
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 struct Watch {
     pub name: String,
     pub ty: String,
@@ -598,7 +598,7 @@ impl Debugger {
         let parent = if parent <= 0 { 0 } else { parent as usize };
 
         let watch = Watch {
-            name:name.clone(),
+            name: name.clone(),
             ty: ty.unwrap_or("<unknown type>".to_string()),
             value,
             children: vec![],
@@ -621,9 +621,7 @@ impl Debugger {
         if parent < vec.len() {
             vec[parent].children.push(new_entry);
         } else {
-            log::trace!(
-                "Parent index {parent} out of range when adding watch {name}"
-            );
+            log::trace!("Parent index {parent} out of range when adding watch {name}");
         }
 
         // Just panic if we overflow the i32 return value Unreal wants us to give it. This is
@@ -1163,7 +1161,6 @@ impl Debugger {
                 self.add_line_to_log_inner(s_1.unwrap_or_default());
             }
             VACMD::EditorGotoLine => {
-
                 if s_1.is_none() {
                     log::trace!("EditorGotoLine code: {dw_1}");
                     self.goto_line(dw_1 as i32);

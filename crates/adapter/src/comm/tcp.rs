@@ -7,12 +7,14 @@ use std::{
     time::Duration,
 };
 
-use common::{UnrealCommand, UnrealInterfaceMessage, UnrealResponse, DEFAULT_CONNECT_ATTEMPTS, DEFAULT_CONNECT_TIMEOUT};
+use common::{
+    UnrealCommand, UnrealInterfaceMessage, UnrealResponse, DEFAULT_CONNECT_ATTEMPTS,
+    DEFAULT_CONNECT_TIMEOUT,
+};
 
 use crate::AdapterMessage;
 
 use super::Connection;
-
 
 /// A TCP-based connection between the debug adapter and the Unreal debugger
 /// interface.
@@ -22,7 +24,7 @@ pub struct TcpConnection {
 }
 
 /// The configuration for the TCP connection timeout.
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub struct TcpConnectTimeoutConfig {
     /// The number of connection attempts to make before giving up.
     pub connect_attempts: u32,
@@ -35,7 +37,7 @@ impl TcpConnection {
     pub fn connect(
         port: u16,
         event_sender: Sender<AdapterMessage>,
-        timeout_config:TcpConnectTimeoutConfig,
+        timeout_config: TcpConnectTimeoutConfig,
     ) -> Result<TcpConnection, Error> {
         let mut tcp: Option<TcpStream> = None;
 
@@ -163,10 +165,12 @@ fn debuggee_tcp_loop(
 
 impl TcpConnectTimeoutConfig {
     /// Create a new TcpConnectTimeoutConfig with the given number of connection attempts and timeout duration.
-    pub fn new_from_args(attempts:Option<u32>,timeout_sec:Option<f32>) -> Self {
+    pub fn new_from_args(attempts: Option<u32>, timeout_sec: Option<f32>) -> Self {
         Self {
             connect_attempts: attempts.unwrap_or(DEFAULT_CONNECT_ATTEMPTS),
-            connect_timeout: timeout_sec.map(|timeout_sec| Duration::from_secs_f32(timeout_sec)).unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+            connect_timeout: timeout_sec
+                .map(|timeout_sec| Duration::from_secs_f32(timeout_sec))
+                .unwrap_or(DEFAULT_CONNECT_TIMEOUT),
         }
     }
 }

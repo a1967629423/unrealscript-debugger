@@ -19,8 +19,11 @@ use dap::{
 use flexi_logger::LogSpecification;
 
 use crate::{
-    client::Client, client_config::ClientConfig, comm::tcp::{TcpConnectTimeoutConfig, TcpConnection},
-    connected_adapter::UnrealscriptAdapter, AdapterMessage, UnrealscriptAdapterError, _LOGGER,
+    client::Client,
+    client_config::ClientConfig,
+    comm::tcp::{TcpConnectTimeoutConfig, TcpConnection},
+    connected_adapter::UnrealscriptAdapter,
+    AdapterMessage, UnrealscriptAdapterError, _LOGGER,
 };
 
 /// A representation of a disconnected adapter. This manages the portion of the
@@ -154,7 +157,7 @@ impl<C: Client> DisconnectedAdapter<C> {
             ResponseBody::Initialize(Some(Capabilities {
                 supports_configuration_done_request: true,
                 supports_delayed_stack_trace_loading: true,
-                supports_evaluate_for_hovers:true,
+                supports_evaluate_for_hovers: true,
             })),
         ))?;
         Ok(())
@@ -162,12 +165,20 @@ impl<C: Client> DisconnectedAdapter<C> {
 
     /// Connect to the debugger interface. When connected this will send an 'initialized' event to
     /// DAP. This is shared by both the 'launch' and 'attach' requests.
-    fn connect_to_interface(&self, port: u16,timeout_config:TcpConnectTimeoutConfig) -> Result<TcpConnection, UnrealscriptAdapterError> {
+    fn connect_to_interface(
+        &self,
+        port: u16,
+        timeout_config: TcpConnectTimeoutConfig,
+    ) -> Result<TcpConnection, UnrealscriptAdapterError> {
         log::info!("Connecting to port {port}");
 
         // Connect to the Unrealscript interface and set up the communications channel between
         // it and this adapter.
-        Ok(TcpConnection::connect(port, self.sender.clone(),timeout_config)?)
+        Ok(TcpConnection::connect(
+            port,
+            self.sender.clone(),
+            timeout_config,
+        )?)
     }
 
     /// Attach to a running unreal process.
@@ -206,8 +217,12 @@ impl<C: Client> DisconnectedAdapter<C> {
         let port = DEFAULT_PORT;
         self.config.source_roots = args.source_roots.clone().unwrap_or_default();
         self.config.enable_stack_hack = args.enable_stack_hack.unwrap_or(true);
-        self.config.use_va_interface = args.debugger_interface.as_ref().map(|s| s == "va").unwrap_or(false);
-        match self.connect_to_interface(port,TcpConnectTimeoutConfig::default()) {
+        self.config.use_va_interface = args
+            .debugger_interface
+            .as_ref()
+            .map(|s| s == "va")
+            .unwrap_or(false);
+        match self.connect_to_interface(port, TcpConnectTimeoutConfig::default()) {
             Ok(connection) => {
                 // Connection succeeded: Respond with a success response and return
                 // the connected adapter.
@@ -219,7 +234,7 @@ impl<C: Client> DisconnectedAdapter<C> {
                     self.config,
                     Box::new(connection),
                     None,
-                    args.log_level.as_ref().cloned()
+                    args.log_level.as_ref().cloned(),
                 ))
             }
             Err(e) => {
@@ -367,12 +382,22 @@ impl<C: Client> DisconnectedAdapter<C> {
         // attach, but that also requires the user to enable the debugger from the unreal side with
         // 'toggledebugger'.
         let auto_debug = !matches!(args.no_debug, Some(true));
-        self.config.use_va_interface = args.debugger_interface.as_ref().map(|s| s == "va").unwrap_or(false);
-        match self.spawn_debuggee(args, auto_debug,self.config.use_va_interface) {
+        self.config.use_va_interface = args
+            .debugger_interface
+            .as_ref()
+            .map(|s| s == "va")
+            .unwrap_or(false);
+        match self.spawn_debuggee(args, auto_debug, self.config.use_va_interface) {
             Ok(child) => {
                 // If we're auto-debugging we can now connect to the interface.
                 if auto_debug {
-                    match self.connect_to_interface(port,TcpConnectTimeoutConfig::new_from_args(args.connect_attempts,args.connect_timeout_seconds)) {
+                    match self.connect_to_interface(
+                        port,
+                        TcpConnectTimeoutConfig::new_from_args(
+                            args.connect_attempts,
+                            args.connect_timeout_seconds,
+                        ),
+                    ) {
                         Ok(connection) => {
                             // Send a response ack for the launch request.
                             self.client.respond(Response::make_ack(req))?;
@@ -381,14 +406,13 @@ impl<C: Client> DisconnectedAdapter<C> {
                             self.config.auto_resume = args.auto_resume.unwrap_or(false);
                             self.config.enable_stack_hack = args.enable_stack_hack.unwrap_or(true);
 
-
                             Ok(UnrealscriptAdapter::new(
                                 self.client,
                                 self.receiver,
                                 self.config,
                                 Box::new(connection),
                                 Some(child),
-                                args.log_level.as_ref().cloned()
+                                args.log_level.as_ref().cloned(),
                             ))
                         }
                         Err(e) => {

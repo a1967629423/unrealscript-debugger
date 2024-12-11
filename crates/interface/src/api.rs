@@ -10,11 +10,15 @@
 /// for convenience since it is primarily passed strings.
 pub type UnrealCallback = extern "C" fn(*const u8) -> ();
 /// TODO:
-pub type UnrealVADebugCallback = extern "C" fn(i32,LPCWSTR) -> ();
+pub type UnrealVADebugCallback = extern "C" fn(i32, LPCWSTR) -> ();
 
 use std::ffi::c_char;
 
-use crate::{game_runtime_is_initialized, get_game_runtime_option_mut, init_game_runtime, lifetime::{initialize, va_initialized}, set_game_runtime_in_break};
+use crate::{
+    game_runtime_is_initialized, get_game_runtime_option_mut, init_game_runtime,
+    lifetime::{initialize, va_initialized},
+    set_game_runtime_in_break,
+};
 use common::WatchKind;
 use log;
 use winapi::shared::{minwindef::DWORD, ntdef::LPCWSTR};
@@ -22,55 +26,55 @@ use winapi::shared::{minwindef::DWORD, ntdef::LPCWSTR};
 use crate::DEBUGGER;
 
 /// TODO: This is a list of all the commands that Unreal can send to the debugger interface.
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(i32)]
 pub enum VACMD {
     /// Show the DLL form.
     ShowDllForm,
     /// Add a class to the class hierarchy.
-	EditorCommand,
+    EditorCommand,
     /// Clear the class hierarchy.
-	EditorLoadTextBuffer,
+    EditorLoadTextBuffer,
     /// Build the class hierarchy.
-	AddClassToHierarchy,
+    AddClassToHierarchy,
     /// Clear the class hierarchy.
-	ClearHierarchy,
+    ClearHierarchy,
     /// Build the class hierarchy.
-	BuildHierarchy,
+    BuildHierarchy,
     /// Clear the watch list.
-	ClearWatch,
+    ClearWatch,
     /// Add a watch to the watch list.
-	AddWatch,
+    AddWatch,
     /// Unused.
-	SetCallback,
+    SetCallback,
     ///Add a breakpoint.
-	AddBreakpoint,
+    AddBreakpoint,
     /// Remove a breakpoint.
-	RemoveBreakpoint,
+    RemoveBreakpoint,
     /// Focus the given class in the editor.
-	EditorGotoLine,
+    EditorGotoLine,
     /// Add a line to the log.
-	AddLineToLog,
+    AddLineToLog,
     /// Clear the call stack.
-	EditorLoadClass,
+    EditorLoadClass,
     /// Add a class to the call stack.
-	CallStackClear,
+    CallStackClear,
     /// Record the object name for the current object.
-	CallStackAdd,
+    CallStackAdd,
     /// Unused.
-	DebugWindowState,
+    DebugWindowState,
     /// Clear the watch list.
     ClearAWatch,
     /// Add a watch to the watch list.
-	AddAWatch,
+    AddAWatch,
     /// Lock the watch list.
-	LockList,
+    LockList,
     /// Unlock the watch list.
-	UnlockList,
+    UnlockList,
     /// Set the current object name.
     SetCurrentObjectName,
     /// VA interface End
-	GameEnded
+    GameEnded,
 }
 
 impl TryFrom<i32> for VACMD {
@@ -310,7 +314,7 @@ pub extern "C" fn DebugWindowState(code: i32) {
 }
 /// VA interface
 #[no_mangle]
-pub extern "C" fn IPCSetCallbackUC(callback:Option<UnrealVADebugCallback>) {
+pub extern "C" fn IPCSetCallbackUC(callback: Option<UnrealVADebugCallback>) {
     let cb = callback.expect("Unreal should never give us a null callback.");
     va_initialized(cb);
 }
@@ -327,26 +331,32 @@ pub extern "C" fn IPCNotifyBeginTick() {
     }
 }
 
-/// VA interface 
+/// VA interface
 #[no_mangle]
-pub extern "C" fn IPCNotifyDebugInfo(_param:u32) -> u32 {
+pub extern "C" fn IPCNotifyDebugInfo(_param: u32) -> u32 {
     0
 }
 
 /// VA interface
 #[no_mangle]
-pub extern "C" fn IPCnFringeSupport(version:i32) {
+pub extern "C" fn IPCnFringeSupport(version: i32) {
     log::trace!("IPCnFringeSupport {version}");
 }
 
 /// VA interface
 #[no_mangle]
-pub extern "C" fn IPCSendCommandToVS(cmd_id:i32,dw_1:DWORD,dw_2:DWORD,s_1:LPCWSTR,s_2:LPCWSTR) -> i32 {
+pub extern "C" fn IPCSendCommandToVS(
+    cmd_id: i32,
+    dw_1: DWORD,
+    dw_2: DWORD,
+    s_1: LPCWSTR,
+    s_2: LPCWSTR,
+) -> i32 {
     let Ok(cmd) = VACMD::try_from(cmd_id) else {
         log::error!("Unknown command id: {cmd_id}");
         return -1;
     };
     let mut hnd = DEBUGGER.lock().unwrap();
     let dbg = hnd.as_mut().unwrap();
-    dbg.ipc_send_command_to_vs(cmd,dw_1,dw_2,s_1,s_2)
+    dbg.ipc_send_command_to_vs(cmd, dw_1, dw_2, s_1, s_2)
 }

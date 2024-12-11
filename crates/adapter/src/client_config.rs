@@ -30,7 +30,7 @@ pub struct ClientConfig {
     pub auto_resume: bool,
 
     /// If true, the client supports the `va` interface.
-    pub use_va_interface:bool,
+    pub use_va_interface: bool,
 }
 
 impl ClientConfig {
@@ -49,7 +49,7 @@ impl Default for ClientConfig {
             source_roots: vec![],
             enable_stack_hack: false,
             auto_resume: false,
-            use_va_interface:false,
+            use_va_interface: false,
         }
     }
 }

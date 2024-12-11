@@ -411,8 +411,7 @@ fn log_dir() -> Option<PathBuf> {
         //         d.push(LOG_DEFAULT_SUBDIR);
         //         d
         //     });
-        log_dir = std::env::current_dir().ok()
-        .map(|mut d| {
+        log_dir = std::env::current_dir().ok().map(|mut d| {
             d.push(LOG_DEFAULT_SUBDIR);
             d
         });

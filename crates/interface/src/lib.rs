@@ -31,7 +31,7 @@ unsafe impl Sync for SingleThreadedRuntime {}
 
 static RUNTIME: Option<SingleThreadedRuntime> = None;
 static GAME_RUNTIME: Option<SingleThreadedRuntime> = None;
-static GAME_RUNTIME_IN_BREAK:AtomicBool = AtomicBool::new(false);
+static GAME_RUNTIME_IN_BREAK: AtomicBool = AtomicBool::new(false);
 /// The debugger state. Calls from Unreal are dispatched into this instance.
 static DEBUGGER: Mutex<Option<Debugger>> = Mutex::new(None);
 static LOGGER: Mutex<Option<LoggerHandle>> = Mutex::new(None);
@@ -45,20 +45,28 @@ static INTERFACE_VERSION: Version = Version {
 /// TODO
 pub fn get_runtime_option_mut() -> &'static mut Option<SingleThreadedRuntime> {
     #[allow(mutable_transmutes)]
-    unsafe  { std::mem::transmute(&RUNTIME) }
+    unsafe {
+        std::mem::transmute(&RUNTIME)
+    }
 }
 /// TODO
 pub fn get_game_runtime_option_mut() -> &'static mut Option<SingleThreadedRuntime> {
     #[allow(mutable_transmutes)]
-    unsafe  { std::mem::transmute(&GAME_RUNTIME) }
+    unsafe {
+        std::mem::transmute(&GAME_RUNTIME)
+    }
 }
 /// TODO
 pub fn get_runtime_mut() -> &'static mut SingleThreadedRuntime {
-    get_runtime_option_mut().as_mut().expect("Runtime not initialized")
+    get_runtime_option_mut()
+        .as_mut()
+        .expect("Runtime not initialized")
 }
 /// TODO
 pub fn get_game_runtime_mut() -> &'static mut SingleThreadedRuntime {
-    get_game_runtime_option_mut().as_mut().expect("Game runtime not initialized")
+    get_game_runtime_option_mut()
+        .as_mut()
+        .expect("Game runtime not initialized")
 }
 /// TODO
 pub fn init_runtime() {
@@ -98,7 +106,7 @@ impl SingleThreadedRuntime {
     /// TODO
     pub fn spawn<F>(&self, future: F)
     where
-        F: std::future::Future<Output = ()> + 'static
+        F: std::future::Future<Output = ()> + 'static,
     {
         self.pool.spawner().spawn_local(future).unwrap();
     }
