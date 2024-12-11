@@ -14,7 +14,7 @@ pub type UnrealVADebugCallback = extern "C" fn(i32,LPCWSTR) -> ();
 
 use std::ffi::c_char;
 
-use crate::{game_runtime_is_initialized, get_game_runtime_option_mut, get_runtime_mut, get_runtime_option_mut, init_game_runtime, lifetime::{initialize, va_initialized}, set_game_runtime_in_break};
+use crate::{game_runtime_is_initialized, get_game_runtime_option_mut, init_game_runtime, lifetime::{initialize, va_initialized}, set_game_runtime_in_break};
 use common::WatchKind;
 use log;
 use winapi::shared::{minwindef::DWORD, ntdef::LPCWSTR};
@@ -329,7 +329,7 @@ pub extern "C" fn IPCNotifyBeginTick() {
 
 /// VA interface 
 #[no_mangle]
-pub extern "C" fn IPCNotifyDebugInfo(param:u32) -> u32 {
+pub extern "C" fn IPCNotifyDebugInfo(_param:u32) -> u32 {
     0
 }
 

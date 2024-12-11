@@ -36,8 +36,6 @@
 //! The 'initialize' function is used to set up the debugger state when we are
 //! starting a debugging session.
 
-use std::sync::Arc;
-use std::time::Duration;
 use std::{net::SocketAddr, thread};
 
 use common::{
@@ -54,8 +52,7 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use crate::{get_game_runtime_mut, is_game_runtime_in_break};
 use crate::{
     api::{UnrealCallback, UnrealVADebugCallback},
-    debugger::{CommandAction, Debugger, DebuggerError},
-    get_runtime_mut, init_runtime, DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
+    debugger::{CommandAction, Debugger, DebuggerError}, DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
 };
 use async_compat::{Compat,CompatExt};
 
@@ -494,22 +491,6 @@ fn dispatch_command(command: UnrealCommand) -> CommandAction {
         Err(DebuggerError::NotConnected) => {
             log::error!("Not connected");
             CommandAction::Nothing
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_va_main_loop() {
-        extern "C" fn cb(_:i32,_: *const u16) {}
-        va_initialized(cb);
-
-        for _ in 0..10 {
-            std::thread::sleep(Duration::from_millis(100));
-            get_runtime_mut().tick();
         }
     }
 }

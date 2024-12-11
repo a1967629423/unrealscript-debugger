@@ -6,7 +6,7 @@
 use flexi_logger::LogSpecification;
 use futures::channel::mpsc::{self, UnboundedSender};
 use futures::SinkExt;
-use std::ffi::{c_char, c_ulong, CStr};
+use std::ffi::{c_char, CStr};
 use std::thread::JoinHandle;
 use thiserror::Error;
 use winapi::shared::minwindef::DWORD;
@@ -22,7 +22,7 @@ use common::{Frame, WatchKind};
 
 use crate::api::VACMD;
 use crate::stackhack::{StackHack, DEFAULT_MODEL};
-use crate::{get_runtime_mut, set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
+use crate::{ set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
 
 const MAGIC_DISCONNECT_STRING: &str = "Log: Detaching UnrealScript Debugger (currently detached)";
 
