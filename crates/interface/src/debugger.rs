@@ -4,10 +4,13 @@
 //! by Unreal and all the associated handler functions for managing calls from the
 //! Unreal API and calls from the connected adapter.
 use flexi_logger::LogSpecification;
+use futures::channel::mpsc::{self, UnboundedSender};
+use futures::SinkExt;
 use std::ffi::{c_char, CStr};
 use std::thread::JoinHandle;
 use thiserror::Error;
-use tokio::sync::mpsc::{self, UnboundedSender};
+use winapi::shared::minwindef::DWORD;
+use winapi::shared::ntdef::LPCWSTR;
 use winapi::um::stringapiset::{MultiByteToWideChar, WideCharToMultiByte};
 use winapi::um::winnls::{CP_ACP, CP_UTF8};
 
@@ -17,14 +20,24 @@ use common::{
 };
 use common::{Frame, WatchKind};
 
+use crate::api::VACMD;
 use crate::stackhack::{StackHack, DEFAULT_MODEL};
-use crate::{INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
+use crate::{set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
 
 const MAGIC_DISCONNECT_STRING: &str = "Log: Detaching UnrealScript Debugger (currently detached)";
 
 const DEFAULT_WIDECHAR_CAPACITY: usize = 512;
 const DEFAULT_NARROW_CAPACITY: usize = 1024;
 
+const MAX_WIDECHAR_CAPACITY: usize = 4096;
+/// TODO
+#[derive(Debug,Clone,Copy,PartialEq, Eq)]
+pub enum InterfaceType {
+    /// Auto interface
+    Auto,
+    /// VA interface
+    VA
+}
 /// A struct representing the debugger state.
 pub struct Debugger {
     shutdown_sender: UnboundedSender<()>,
@@ -35,7 +48,7 @@ pub struct Debugger {
     user_watches: Vec<Watch>,
     callstack: Vec<Frame>,
     current_object_name: Option<String>,
-    response_channel: Option<tokio::sync::mpsc::UnboundedSender<UnrealInterfaceMessage>>,
+    response_channel: Option<futures::channel::mpsc::UnboundedSender<UnrealInterfaceMessage>>,
     saw_show_dll: bool,
     pending_break_event: bool,
     current_line: i32,
@@ -65,6 +78,9 @@ pub struct Debugger {
 
     // A narrow char buffer for encoding and decoding strings.
     narrow_buffer: Vec<u8>,
+
+    /// The interface type to use
+    pub interface_type: InterfaceType,
 }
 
 #[derive(Debug)]
@@ -75,6 +91,7 @@ enum PendingVariableRequest {
 }
 
 /// A variable watch.
+#[derive(Debug, Clone)]
 struct Watch {
     pub name: String,
     pub ty: String,
@@ -185,6 +202,7 @@ impl Debugger {
             stack_hack: None,
             widechar_buffer: Vec::with_capacity(DEFAULT_WIDECHAR_CAPACITY),
             narrow_buffer: Vec::with_capacity(DEFAULT_NARROW_CAPACITY),
+            interface_type: InterfaceType::Auto,
         }
     }
 
@@ -466,10 +484,12 @@ impl Debugger {
     /// Send a response message. Since responses are always in reaction to a command, this requires
     /// a connected response channel and it is a logic error for this to not exist.
     pub fn send_response(&mut self, response: UnrealResponse) -> Result<(), DebuggerError> {
-        self.response_channel
+        let channel = self
+            .response_channel
             .as_mut()
-            .ok_or(DebuggerError::NotConnected)?
-            .send(UnrealInterfaceMessage::Response(response))
+            .ok_or(DebuggerError::NotConnected)?;
+        channel
+            .unbounded_send(UnrealInterfaceMessage::Response(response))
             .or(Err(DebuggerError::NotConnected))?;
         Ok(())
     }
@@ -512,7 +532,9 @@ impl Debugger {
             // we're not connected yet set a flag indicating that we're stopped so we can tell
             // the adapter about this state when it does connect.
             if let Some(channel) = &mut self.response_channel {
-                if let Err(e) = channel.send(UnrealInterfaceMessage::Event(UnrealEvent::Stopped)) {
+                if let Err(e) =
+                    channel.unbounded_send(UnrealInterfaceMessage::Event(UnrealEvent::Stopped))
+                {
                     log::error!("Sending stopped event failed: {e}");
                 }
             } else {
@@ -521,11 +543,19 @@ impl Debugger {
             }
         }
     }
+    /// set saw show dll used by va debugger
+    pub fn set_saw_show_dll(&mut self, saw_show_dll: bool) {
+        self.saw_show_dll = saw_show_dll;
+    }
 
     /// Add a class to the debugger's class hierarchy.
     pub fn add_class_to_hierarchy(&mut self, arg: *const c_char) {
-        let str = self.decode_string(arg);
-        self.class_hierarchy.push(str);
+        let class = self.decode_string(arg);
+        self.add_class_to_hierarchy_inner(class);
+    }
+
+    fn add_class_to_hierarchy_inner(&mut self, class: String) {
+        self.class_hierarchy.push(class);
     }
 
     /// Clear the class hierarchy.
@@ -558,16 +588,30 @@ impl Debugger {
         name: *const c_char,
         value: *const c_char,
     ) -> i32 {
+        let (name, ty, is_array) = self.decompose_name(name);
+        let value = self.decode_string(value);
+        self.add_watch_inner(kind, parent, name, ty, is_array, value)
+    }
+
+    /// Add a watch entry with the given name and value. Returns a unique id (for
+    /// the duration the debugger is stopped) for this watch.
+    fn add_watch_inner(
+        &mut self,
+        kind: WatchKind,
+        parent: i32,
+        name: String,
+        ty: Option<String>,
+        is_array: Option<bool>,
+        value: String,
+    ) -> i32 {
         // Unreal will give us watches with a parent of -1 for 'root' variables in a given scope.
         // Map these to index 0.
         let parent = if parent <= 0 { 0 } else { parent as usize };
 
-        let (name, ty, is_array) = self.decompose_name(name);
-
         let watch = Watch {
-            name,
+            name: name.clone(),
             ty: ty.unwrap_or("<unknown type>".to_string()),
-            value: self.decode_string(value),
+            value,
             children: vec![],
             is_array: is_array.unwrap_or(false),
         };
@@ -576,7 +620,7 @@ impl Debugger {
         // The given parent must be a member of our vector already.
         // We should have already introduced the 'root' node at index 0 when
         // we cleared the watches.
-        assert!(parent < vec.len());
+        // assert!(parent < vec.len());
 
         // Add the new entry to the vector and return an identifier for it:
         // the index of this entry in the vector.
@@ -585,7 +629,11 @@ impl Debugger {
         let new_entry = vec.len() - 1;
 
         // Record the new entry in the children list of the parent
-        vec[parent].children.push(new_entry);
+        if parent < vec.len() {
+            vec[parent].children.push(new_entry);
+        } else {
+            log::trace!("Parent index {parent} out of range when adding watch {name}");
+        }
 
         // Just panic if we overflow the i32 return value Unreal wants us to give it. This is
         // pretty unlikely to ever occur without Unreal running out of memory first...
@@ -622,7 +670,7 @@ impl Debugger {
                     PendingVariableRequest::UserWatch => {
                         // The new user watch will be the last one added to the user watchlist,
                         // so it's the last child of the root.
-                        let var = self.user_watches.get(0).and_then(|n| {
+                        let var = self.user_watches.first().and_then(|n| {
                             n.children
                                 .last()
                                 .map(|c| self.user_watches[*c].to_variable(*c))
@@ -655,8 +703,13 @@ impl Debugger {
 
     /// A breakpoint has been added.
     pub fn add_breakpoint(&mut self, name: *const c_char, line: i32) {
+        let name = self.decode_string(name);
+        self.add_breakpoint_inner(name, line);
+    }
+
+    fn add_breakpoint_inner(&mut self, qualified_name: String, line: i32) {
         let bp = Breakpoint {
-            qualified_name: self.decode_string(name),
+            qualified_name,
             line,
         };
         log::trace!("Added breakpoint at {}:{}", bp.qualified_name, bp.line);
@@ -667,8 +720,14 @@ impl Debugger {
 
     /// A breakpoint has been removed.
     pub fn remove_breakpoint(&mut self, name: *const c_char, line: i32) {
+        let qualified_name = self.decode_string(name);
+        self.remove_breakpoint_inner(qualified_name, line);
+    }
+
+    /// A breakpoint has been removed.
+    pub fn remove_breakpoint_inner(&mut self, qualified_name: String, line: i32) {
         let bp = Breakpoint {
-            qualified_name: self.decode_string(name),
+            qualified_name,
             line,
         };
         log::trace!("Removed breakpoint at {}:{}", bp.qualified_name, bp.line);
@@ -687,6 +746,12 @@ impl Debugger {
         // The "name" provided by Unreal is of the form 'Function ClassName:FunctionName'.
         //
         let name = self.decode_string(class_name);
+
+        self.add_frame_inner(name);
+    }
+
+    /// Add a frame to the callstack.
+    fn add_frame_inner(&mut self, name: String) {
         let mut it = name.split(&[' ', ':']);
         it.next();
         let class_name = it.next().unwrap_or("");
@@ -762,7 +827,13 @@ impl Debugger {
 
     /// Record the current object name. This is updated each time unreal stops.
     pub fn current_object_name(&mut self, obj_name: *const c_char) {
-        self.current_object_name = Some(self.decode_string(obj_name));
+        let obj_name = self.decode_string(obj_name);
+        self.current_object_name_inner(obj_name);
+    }
+
+    /// Record the current object name. This is updated each time unreal stops.
+    pub fn current_object_name_inner(&mut self, obj_name: String) {
+        self.current_object_name = Some(obj_name);
     }
 
     /// A line has been added to the log. Send directly to the adapter (if connected).
@@ -775,46 +846,19 @@ impl Debugger {
     /// we'll get before Unreal unloads our DLL, so we really need to stop the thread we
     /// spawned before this happens or the game will crash.
     pub fn add_line_to_log(&mut self, text: *const c_char) {
-        let mut str = self.decode_string(text);
+        let str = self.decode_string(text);
+        self.add_line_to_log_inner(str);
+    }
 
+    fn add_line_to_log_inner(&mut self, mut str: String) {
         if let Some(sender) = &mut self.response_channel {
             log::trace!("Add to log: {str}");
 
             // Detect if this is a shutdown signal.
-            if str == MAGIC_DISCONNECT_STRING {
+            if str == MAGIC_DISCONNECT_STRING && self.interface_type == InterfaceType::Auto {
                 log::info!("Received shutdown message.");
 
-                // Note that we don't bother sending an event to the adapter to tell it that
-                // we're closing, we just let it sense this by detecting that the TCP connection
-                // has closed. Sending the event would be difficult to guarantee because we'd
-                // need to block here with some complex protocol to be 100% sure the adapter has
-                // received the message before we continue with the shutdown process.
-
-                // Send the shutdown broadcast message to cause our thread to exit. This shouldn't
-                // fail since the spawned thread owns the receiving end, but if it does we
-                // are about to be killed by Unreal anyway. When this thread exits it'll drop
-                // the TCP connection and any other resources our interface holds. The only
-                // object still left behind will be the static objects: this debugger object and
-                // our variable condvar. These are OK (presumably their destructors will run on
-                // the thread that does the DLL unload, triggered from DllMain).
-                _ = self.shutdown_sender.send(());
-
-                // Wait for the thread to exit before we return. If we get here then shutdown was
-                // initiated by a 'toggledebugger' command (if we had initiated shutdown from the
-                // adapter via a Disconnect message we'd have closed the response_channel before
-                // sending the 'stopdebugging' command and would not enter this block).
-                //
-                // When shutdown is initiated from toggledebugger we are running on the
-                // Unreal thread and not the spawned thread, so we are not blocking ourselves
-                // from exiting.
-                if let Some(h) = self.handle.take() {
-                    match h.join() {
-                        Ok(()) => (),
-                        Err(e) => {
-                            log::error!("Error joining thread: {e:?}");
-                        }
-                    }
-                }
+                self.game_ended();
 
                 // Now we can return control to Unreal and it will begin the DLL unload process.
                 return;
@@ -822,7 +866,9 @@ impl Debugger {
 
             // Unreal does not add newlines to log messages, add one for readability.
             str.push_str("\r\n");
-            if let Err(e) = sender.send(UnrealInterfaceMessage::Event(UnrealEvent::Log(str))) {
+            if let Err(e) =
+                sender.unbounded_send(UnrealInterfaceMessage::Event(UnrealEvent::Log(str)))
+            {
                 log::error!("Sending log failed: {e}");
             }
         } else {
@@ -895,7 +941,12 @@ impl Debugger {
                 "<unknown>"
             })
             .to_string();
+        self.decompose_name_inner(str)
+    }
 
+    /// Decompose an Unreal variable watch name into a name, type, and whether this
+    /// type is an array.
+    fn decompose_name_inner(&mut self, str: String) -> (String, Option<String>, Option<bool>) {
         // The name string is of the form "Name ( Ty,addr1,addr2 )".
         // If the type is a dynamic array the type will be "Array". If it's
         // a static array it will be "Static Ty Array".
@@ -1042,6 +1093,152 @@ impl Debugger {
             self.show_dll_form();
         }
     }
+
+    fn game_ended(&mut self) {
+        log::info!("Game ended, shutting down debugger.");
+        // Note that we don't bother sending an event to the adapter to tell it that
+        // we're closing, we just let it sense this by detecting that the TCP connection
+        // has closed. Sending the event would be difficult to guarantee because we'd
+        // need to block here with some complex protocol to be 100% sure the adapter has
+        // received the message before we continue with the shutdown process.
+
+        // Send the shutdown broadcast message to cause our thread to exit. This shouldn't
+        // fail since the spawned thread owns the receiving end, but if it does we
+        // are about to be killed by Unreal anyway. When this thread exits it'll drop
+        // the TCP connection and any other resources our interface holds. The only
+        // object still left behind will be the static objects: this debugger object and
+        // our variable condvar. These are OK (presumably their destructors will run on
+        // the thread that does the DLL unload, triggered from DllMain).
+        _ = self.shutdown_sender.unbounded_send(());
+
+        // Wait for the thread to exit before we return. If we get here then shutdown was
+        // initiated by a 'toggledebugger' command (if we had initiated shutdown from the
+        // adapter via a Disconnect message we'd have closed the response_channel before
+        // sending the 'stopdebugging' command and would not enter this block).
+        //
+        // When shutdown is initiated from toggledebugger we are running on the
+        // Unreal thread and not the spawned thread, so we are not blocking ourselves
+        // from exiting.
+        if let Some(h) = self.handle.take() {
+            match h.join() {
+                Ok(()) => (),
+                Err(e) => {
+                    log::error!("Error joining thread: {e:?}");
+                }
+            }
+        }
+    }
+
+    /// TODO:
+    pub fn ipc_send_command_to_vs(
+        &mut self,
+        command: VACMD,
+        dw_1: DWORD,
+        dw_2: DWORD,
+        s_1: LPCWSTR,
+        s_2: LPCWSTR,
+    ) -> i32 {
+        let s_1 = wide_str_to_string(s_1, MAX_WIDECHAR_CAPACITY);
+        let s_2 = wide_str_to_string(s_2, MAX_WIDECHAR_CAPACITY);
+
+        match command {
+            VACMD::ShowDllForm => {
+                self.show_dll_form();
+                set_game_runtime_in_break(true);
+            }
+            VACMD::AddClassToHierarchy => {
+                let class_name = s_1.expect("add class to hierarchy require s_1");
+                log::trace!("add class to hierarchy: {class_name}");
+                self.add_class_to_hierarchy_inner(class_name);
+            }
+            VACMD::ClearHierarchy => {
+                self.clear_class_hierarchy();
+            }
+            VACMD::BuildHierarchy => {
+                // TODO: Implement this.
+            }
+            VACMD::ClearWatch => {
+                let kind: WatchKind =
+                    WatchKind::from_int(dw_1 as i32).expect("clear watch require dw_1");
+                log::trace!("Clear watch: {:?} {dw_1}", kind);
+                self.clear_watch(kind);
+            }
+            VACMD::AddWatch => {
+                let watch_kind = WatchKind::from_int(dw_1 as i32).expect("add watch require dw_1");
+                let parent = dw_2 as i32;
+                let object_name = s_1.expect("add watch require s_1");
+                let data = s_2.expect("add watch require s_2");
+                let (name, ty, is_array) = self.decompose_name_inner(object_name);
+                return self.add_watch_inner(watch_kind, parent, name, ty, is_array, data);
+            }
+            VACMD::AddLineToLog => {
+                self.add_line_to_log_inner(s_1.unwrap_or_default());
+            }
+            VACMD::EditorGotoLine => {
+                if s_1.is_none() {
+                    self.goto_line(dw_1 as i32);
+                }
+            }
+
+            VACMD::RemoveBreakpoint => {
+                let class_name = s_1.expect("remove breakpoint need class_name");
+                self.remove_breakpoint_inner(class_name, dw_1 as i32);
+            }
+            VACMD::AddBreakpoint => {
+                let class_name = s_1.expect("add breakpoint require class name");
+                self.add_breakpoint_inner(class_name, dw_1 as i32);
+            }
+            VACMD::CallStackClear => {
+                self.clear_callstack();
+            }
+            VACMD::CallStackAdd => {
+                let class_name = s_1.expect("call stack add require class name");
+                self.add_frame_inner(class_name);
+            }
+            VACMD::DebugWindowState => {
+            }
+            VACMD::LockList => {
+                self.lock_watchlist();
+            }
+            VACMD::UnlockList => {
+                let watch_kind =
+                    WatchKind::from_int(dw_1 as i32).expect("unlock list require dw_1");
+                self.unlock_watchlist(watch_kind);
+            }
+            VACMD::SetCurrentObjectName => {
+                let object_name = s_1.expect("set current object name require s_1");
+                self.current_object_name_inner(object_name);
+            }
+            VACMD::GameEnded => {
+                self.game_ended();
+            }
+            _ => {}
+        }
+
+        log::trace!("IPC Receive Command: {command:?}");
+
+        0
+    }
+}
+
+fn wide_str_to_string(wide_str: *const u16, max_len: usize) -> Option<String> {
+    if wide_str.is_null() {
+        return None;
+    }
+    let len = wide_str_len(wide_str, max_len);
+    let slice = unsafe { std::slice::from_raw_parts(wide_str, len) };
+    Some(String::from_utf16_lossy(slice))
+}
+fn wide_str_len(wide_str: *const u16, max_len: usize) -> usize {
+    if wide_str.is_null() {
+        return 0;
+    }
+    let mut len = 0;
+
+    while unsafe { *wide_str.add(len) } != 0 && len < max_len {
+        len += 1;
+    }
+    len
 }
 
 /// Convert an unreal C string pointer to a CStr.
@@ -1055,14 +1252,18 @@ fn make_cstr<'a>(raw: *const c_char) -> &'a CStr {
 
 #[cfg(test)]
 mod tests {
-    use tokio::sync::mpsc::unbounded_channel;
+    // use tokio::sync::mpsc::unbounded_channel;
+    use futures::channel::mpsc::unbounded;
+    use futures::prelude::*;
+
+    use crate::get_runtime_mut;
 
     use super::*;
 
     #[test]
     fn adding_to_hierarchy() {
         let cls = "Package.Class\0".as_ptr() as *const i8;
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_class_to_hierarchy(cls);
         assert_eq!(dbg.class_hierarchy[0], "Package.Class");
@@ -1071,7 +1272,7 @@ mod tests {
     #[test]
     fn clearing_hierarchy() {
         let cls = "Package.Class\0".as_ptr() as *const i8;
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_class_to_hierarchy(cls);
         assert_eq!(dbg.class_hierarchy.len(), 1);
@@ -1083,7 +1284,7 @@ mod tests {
     fn add_watches_are_independent() {
         let name = "SomeVar\0".as_ptr() as *const i8;
         let val = "10\0".as_ptr() as *const i8;
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         assert_eq!(dbg.add_watch(WatchKind::Local, -1, name, val), 1);
         assert_eq!(dbg.local_watches.len(), 2);
@@ -1103,7 +1304,7 @@ mod tests {
     fn clear_watches_are_independent() {
         let name = "SomeVar\0".as_ptr() as *const i8;
         let val = "10\0".as_ptr() as *const i8;
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_watch(WatchKind::Local, -1, name, val);
         dbg.add_watch(WatchKind::Global, -1, name, val);
@@ -1119,33 +1320,35 @@ mod tests {
     fn add_watch_invalid_parent() {
         let name = "SomeVar\0".as_ptr() as *const i8;
         let val = "10\0".as_ptr() as *const i8;
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_watch(WatchKind::Local, 1, name, val);
     }
 
     #[test]
     fn log_sends_line() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded();
         dbg.response_channel = Some(tx);
         let str = "This is a log line\0";
         dbg.add_line_to_log(str.as_ptr() as *const i8);
 
-        match rx.blocking_recv().unwrap() {
-            // Compare the strings. Ignore the null byte in our sending string, and ignore the \r\n
-            // appended to the log line in the event.
-            UnrealInterfaceMessage::Event(UnrealEvent::Log(s)) => {
-                assert_eq!(str[..str.len() - 1], s[..s.len() - 2])
-            }
-            _ => panic!("Expected a log"),
-        };
+        get_runtime_mut().run_until(async move {
+            match rx.next().await.unwrap() {
+                // Compare the strings. Ignore the null byte in our sending string, and ignore the \r\n
+                // appended to the log line in the event.
+                UnrealInterfaceMessage::Event(UnrealEvent::Log(s)) => {
+                    assert_eq!(str[..str.len() - 1], s[..s.len() - 2])
+                }
+                _ => panic!("Expected a log"),
+            };
+        });
     }
 
     #[test]
     fn add_frame() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_frame("Function MyPackage.Class:MyFunction\0".as_ptr() as *const i8);
         assert_eq!(dbg.callstack[0].qualified_name, "MyPackage.Class");
@@ -1154,7 +1357,7 @@ mod tests {
 
     #[test]
     fn empty_stacktrace() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let response = dbg.handle_stacktrace_request(&StackTraceRequest {
             start_frame: 0,
@@ -1165,7 +1368,7 @@ mod tests {
 
     #[test]
     fn with_stacktrace() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.callstack.push(Frame {
             qualified_name: "Class1".to_string(),
@@ -1200,7 +1403,7 @@ mod tests {
 
     #[test]
     fn partial_stacktrace_start() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.callstack.push(Frame {
             qualified_name: "Class1".to_string(),
@@ -1228,7 +1431,7 @@ mod tests {
 
     #[test]
     fn partial_stacktrace_end() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.callstack.push(Frame {
             qualified_name: "Class1".to_string(),
@@ -1256,7 +1459,7 @@ mod tests {
 
     #[test]
     fn partial_stacktrace_beyond() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.callstack.push(Frame {
             qualified_name: "Class1".to_string(),
@@ -1277,7 +1480,7 @@ mod tests {
 
     #[test]
     fn empty_watch_count() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         assert_eq!(dbg.watch_count(WatchKind::Local, 0), 0);
         assert_eq!(dbg.watch_count(WatchKind::Global, 0), 0);
@@ -1286,7 +1489,7 @@ mod tests {
 
     #[test]
     fn local_watch_count() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_watch(
             WatchKind::Local,
@@ -1308,7 +1511,7 @@ mod tests {
 
     #[test]
     fn global_watch_count() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_watch(
             WatchKind::Global,
@@ -1329,7 +1532,7 @@ mod tests {
 
     #[test]
     fn watch_counts_roots_only() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         dbg.add_watch(
             WatchKind::Global,
@@ -1366,7 +1569,7 @@ mod tests {
 
     #[test]
     fn simple_name() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let str = "Location ( Struct,00007FF45D513A00,00007FF44F9B52F0 )\0";
         let (name, ty, is_array) = dbg.decompose_name(str.as_ptr() as *const i8);
@@ -1377,7 +1580,7 @@ mod tests {
 
     #[test]
     fn static_array_name() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let str = "CharacterStats ( Static Struct Array )\0";
         let (name, ty, is_array) = dbg.decompose_name(str.as_ptr() as *const i8);
@@ -1388,7 +1591,7 @@ mod tests {
 
     #[test]
     fn dynamic_array_name() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let str = "AWCAbilities ( Array )\0";
         let (name, ty, is_array) = dbg.decompose_name(str.as_ptr() as *const i8);
@@ -1399,7 +1602,7 @@ mod tests {
 
     #[test]
     fn base_class_name() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let str = "[[ Object ]]\0";
         let (name, ty, is_array) = dbg.decompose_name(str.as_ptr() as *const i8);
@@ -1410,7 +1613,7 @@ mod tests {
 
     #[test]
     fn array_element_name() {
-        let (ctx, _) = unbounded_channel();
+        let (ctx, _) = unbounded();
         let mut dbg = Debugger::new(ctx, None);
         let str = "SomeArray[0]\0";
         let (name, ty, is_array) = dbg.decompose_name(str.as_ptr() as *const i8);

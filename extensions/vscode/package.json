@@ -47,6 +47,9 @@
                             "logLevel": {
                                 "type": "string",
                                 "description": "log level to override the default or environment"
+                            },
+                            "debuggerInterface": {
+                                "enum": ["auto","va"]
                             }
                         }
                     },
@@ -96,6 +99,9 @@
                                 "type": "number",
                                 "description": "timeout in seconds for each connection attempt",
                                 "minimum": 0.1
+                            },
+                            "debuggerInterface": {
+                                "enum": ["auto","va"]
                             }
                         }
                     }

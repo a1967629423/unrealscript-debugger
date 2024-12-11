@@ -7,12 +7,10 @@ use adapter::{
 };
 use common::{UnrealCommand, UnrealInterfaceMessage};
 use dap::events::Event;
+use futures::channel::mpsc::unbounded as unbounded_channel;
 use futures::{stream::SplitStream, SinkExt, StreamExt};
 use interface::debugger::Debugger;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    sync::mpsc::unbounded_channel,
-};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_serde::formats::Json;
 use tokio_util::codec::LengthDelimitedCodec;
 
@@ -54,14 +52,10 @@ pub async fn setup_with_client<C: Client>(
         client,
         receiver,
         ClientConfig {
-            one_based_lines: true,
             supports_variable_type: true,
-            supports_invalidated_event: false,
-            source_roots: vec![],
-            enable_stack_hack: false,
-            auto_resume: false,
+            ..Default::default()
         },
-        Box::new(TcpConnection::connect(port, sender,TcpConnectTimeoutConfig::default()).unwrap()),
+        Box::new(TcpConnection::connect(port, sender, TcpConnectTimeoutConfig::default()).unwrap()),
         None,
         None,
     );
@@ -87,7 +81,7 @@ pub async fn setup_with_client<C: Client>(
     // Spawn a task to monitor the receiving side of events and push them through the TCP
     // connection.
     tokio::task::spawn(async move {
-        while let Some(msg) = rx.recv().await {
+        while let Some(msg) = rx.next().await {
             tcp_tx.send(msg).await.unwrap();
         }
     });
