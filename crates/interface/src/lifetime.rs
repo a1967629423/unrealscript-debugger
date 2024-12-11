@@ -36,24 +36,28 @@
 //! The 'initialize' function is used to set up the debugger state when we are
 //! starting a debugging session.
 
+use std::sync::Arc;
+use std::time::Duration;
 use std::{net::SocketAddr, thread};
 
-use common::{create_logger, UnrealCommand, UnrealInterfaceMessage, DEFAULT_PORT, DEFAULT_PORT_TRY_NUM, PORT_TRY_NUM_VAR, PORT_VAR};
-use futures::prelude::*;
-use tokio::{
-    net::{TcpListener, TcpStream},
-    runtime::Builder,
-    select,
-    sync::mpsc::{self, unbounded_channel, UnboundedReceiver},
+use common::{
+    create_logger, UnrealCommand, UnrealInterfaceMessage, DEFAULT_PORT, DEFAULT_PORT_TRY_NUM,
+    PORT_TRY_NUM_VAR, PORT_VAR,
 };
+use futures::channel::mpsc::{self, unbounded, UnboundedReceiver};
+use futures::prelude::*;
+use futures::select;
+use tokio::net::{TcpListener, TcpStream};
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
+use crate::{get_game_runtime_mut, is_game_runtime_in_break};
 use crate::{
-    api::UnrealCallback,
+    api::{UnrealCallback, UnrealVADebugCallback},
     debugger::{CommandAction, Debugger, DebuggerError},
-    DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
+    get_runtime_mut, init_runtime, DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
 };
+use async_compat::{Compat,CompatExt};
 
 /// Initialize the debugger instance. This should be called exactly once when
 /// Unreal first initializes us. Responsible for building the shared state object
@@ -77,18 +81,30 @@ pub fn initialize(cb: UnrealCallback) {
         // debugger instance owns the tx side and can send the event when this happens.
         // The separate thread we spawn below owns the receiving side and uses this to
         // cleanly stop itself.
-        let (ctx, crx) = unbounded_channel();
+        let (ctx, crx) = unbounded();
 
         // Start the main loop that will listen for connections so we can
         // communicate the debugger state to the adapter. This will spin up a
         // new async runtime for this thread only and wait for the main loop
         // to complete.
         let handle = thread::spawn(move || {
-            let rt = Builder::new_current_thread()
-                .enable_io()
-                .build()
-                .expect("Failed to create runtime");
-            rt.block_on(async {
+            // let rt = Builder::new_current_thread()
+            //     .enable_io()
+            //     .build()
+            //     .expect("Failed to create runtime");
+            // rt.block_on(async {
+            //     match main_loop(cb, crx).await {
+            //         Ok(()) => (),
+            //         Err(e) => {
+            //             // Something catastrophic failed in the main loop. Log it
+            //             // and exit the thread, there is little else we can do.
+            //             log::error!("Error in debugger main loop: {e}");
+            //         }
+            //     }
+            // });
+            // init_runtime();
+            // get_runtime_mut().spawn();
+            futures::executor::block_on(Compat::new(async move {
                 match main_loop(cb, crx).await {
                     Ok(()) => (),
                     Err(e) => {
@@ -97,11 +113,86 @@ pub fn initialize(cb: UnrealCallback) {
                         log::error!("Error in debugger main loop: {e}");
                     }
                 }
-            });
+            }));
+
+            // loop {
+            //     get_runtime_mut().tick();
+            //     std::thread::sleep(Duration::from_millis(100));
+            // }
         });
 
         // Construct the debugger state.
         dbg.replace(Debugger::new(ctx, Some(handle)));
+    }
+}
+/// TODO
+pub fn va_initialized(cb: UnrealVADebugCallback) {
+    if let Ok(dbg) = DEBUGGER.lock().as_mut() {
+        assert!(dbg.is_none(), "Initialize already called.");
+
+        // Start the logger. If this fails there isn't much we can do.
+        init_logger();
+
+        // Register a panic handler that will log to the log file, since our stdout/stderr
+        // are not connected to anything.
+        std::panic::set_hook(Box::new(|p| {
+            log::error!("Panic: {p:#?}");
+        }));
+
+        // Create a channel pair for shutting down the interface. This is used when
+        // we receive a signal that Unreal is about to kill the debugging session. The
+        // debugger instance owns the tx side and can send the event when this happens.
+        // The separate thread we spawn below owns the receiving side and uses this to
+        // cleanly stop itself.
+        let (ctx, crx) = unbounded();
+
+        let handle = thread::spawn(move || {
+            // let rt = Builder::new_current_thread()
+            //     .enable_io()
+            //     .build()
+            //     .expect("Failed to create runtime");
+            // rt.block_on(async {
+            //     match main_loop(cb, crx).await {
+            //         Ok(()) => (),
+            //         Err(e) => {
+            //             // Something catastrophic failed in the main loop. Log it
+            //             // and exit the thread, there is little else we can do.
+            //             log::error!("Error in debugger main loop: {e}");
+            //         }
+            //     }
+            // });
+            // init_runtime();
+            // get_runtime_mut().spawn(Compat::new(async move {
+            //     match va_main_loop(cb, crx).await {
+            //         Ok(()) => (),
+            //         Err(e) => {
+            //             // Something catastrophic failed in the main loop. Log it
+            //             // and exit the thread, there is little else we can do.
+            //             log::error!("Error in debugger main loop: {e}");
+            //         }
+            //     }
+            // }));
+            futures::executor::block_on(Compat::new(async move {
+                match va_main_loop(cb, crx).await {
+                    Ok(()) => (),
+                    Err(e) => {
+                        // Something catastrophic failed in the main loop. Log it
+                        // and exit the thread, there is little else we can do.
+                        log::error!("Error in debugger main loop: {e}");
+                    }
+                }
+            }));
+
+            // loop {
+            //     get_runtime_mut().tick();
+            //     std::thread::sleep(Duration::from_millis(100));
+            // }
+        });
+
+        // Construct the debugger state.
+        let mut new_dbg = Debugger::new(ctx, Some(handle));
+        new_dbg.set_saw_show_dll(true);
+        dbg.replace(new_dbg);
     }
 }
 
@@ -156,20 +247,22 @@ fn determine_try_num() -> u16 {
     DEFAULT_PORT_TRY_NUM
 }
 
-/// Create a TPC connection. If the connection is already occupied, try the next port until it reaches try_num times and return an error. 
+/// Create a TPC connection. If the connection is already occupied, try the next port until it reaches try_num times and return an error.
 /// For other errors, return directly
-async fn create_tcp_listener(mut addr:SocketAddr,base_port:u16,mut try_num:u16) -> tokio::io::Result<TcpListener> {
+async fn create_tcp_listener(
+    mut addr: SocketAddr,
+    base_port: u16,
+    mut try_num: u16,
+) -> tokio::io::Result<TcpListener> {
     let mut port = base_port;
     addr.set_port(port);
-    while try_num > 0
-    {
-        match TcpListener::bind(addr).await {
+    while try_num > 0 {
+        match TcpListener::bind(addr).compat().await {
             Ok(listener) => {
                 return Ok(listener);
             }
             Err(e) => {
-                if !matches!(e.kind(), std::io::ErrorKind::AddrInUse)
-                {
+                if !matches!(e.kind(), std::io::ErrorKind::AddrInUse) {
                     log::error!("Failed to bind to port {port}: {e}");
                     return Err(e);
                 }
@@ -180,7 +273,10 @@ async fn create_tcp_listener(mut addr:SocketAddr,base_port:u16,mut try_num:u16) 
         addr.set_port(port);
     }
 
-    return Err(tokio::io::Error::new(tokio::io::ErrorKind::AddrInUse, "Failed to bind to port"));
+    return Err(tokio::io::Error::new(
+        tokio::io::ErrorKind::AddrInUse,
+        "Failed to bind to port",
+    ));
 }
 
 /// The main worker thread for the debugger interface. This is created when the
@@ -197,21 +293,23 @@ async fn main_loop(
         .parse()
         .expect("Failed to parse address");
 
-    let server = create_tcp_listener(addr,port,determine_try_num()).await?;
+    let server = create_tcp_listener(addr, port, determine_try_num()).await?;
+    
+    log::trace!("create server success");
 
     loop {
         select! {
-            conn = server.accept() => {
+            conn = server.accept().compat().fuse() => {
                 let (mut socket, addr) = conn?;
                 log::info!("Received connection from {addr}");
-                match handle_connection(&mut socket, cb, &mut crx).await? {
+                match handle_connection(&mut socket, AutoDebugSendToUnreal::new(cb), &mut crx).await? {
                     // Client disconnected: keep looping and accept another connection
                     ConnectionResult::Disconnected => (),
                     // We're shutting down: close down this loop.
                     ConnectionResult::Shutdown => break,
                 }
             }
-            _ = crx.recv() => {
+            _ = crx.next() => {
                 log::info!("Received shutdown message. Closing main loop.");
                 break;
             }
@@ -220,20 +318,101 @@ async fn main_loop(
     Ok(())
 }
 
+async fn va_main_loop(cb:UnrealVADebugCallback,mut crx: UnboundedReceiver<()>) -> Result<(),std::io::Error> {
+    let port = determine_port();
+
+    log::info!("Listening for connections on port {port}");
+    // Start listening on a socket for connections from the adapter.
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("Failed to parse address");
+
+    let server = create_tcp_listener(addr, port, determine_try_num()).await?;
+
+    loop {
+        select! {
+            conn = server.accept().compat().fuse() => {
+                let (mut socket, addr) = conn?;
+                log::info!("Received connection from {addr}");
+                match handle_connection(&mut socket, VaDebugSendToUnreal::new(cb), &mut crx).await? {
+                    // Client disconnected: keep looping and accept another connection
+                    ConnectionResult::Disconnected => (),
+                    // We're shutting down: close down this loop.
+                    ConnectionResult::Shutdown => break,
+                }
+            }
+            _ = crx.next() => {
+                log::info!("Received shutdown message. Closing main loop.");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// TODO:
+pub trait SendToUnreal {
+    /// TODO:
+    fn send_bytes(&self, bytes: &[u8]);
+}
+
+struct AutoDebugSendToUnreal {
+    callback: UnrealCallback,
+}
+
+impl AutoDebugSendToUnreal {
+    pub fn new(callback: UnrealCallback) -> Self {
+        Self { callback }
+    }
+}
+
+impl SendToUnreal for AutoDebugSendToUnreal {
+    fn send_bytes(&self, bytes: &[u8]) {
+        (self.callback)(bytes.as_ptr());
+    }
+}
+
+struct VaDebugSendToUnreal {
+    callback: UnrealVADebugCallback,
+}
+impl VaDebugSendToUnreal {
+    pub fn new(callback: UnrealVADebugCallback) -> Self {
+        Self { callback }
+    }
+}
+
+impl SendToUnreal for VaDebugSendToUnreal {
+    fn send_bytes(&self, bytes: &[u8]) {
+        let str = String::from_utf8_lossy(&bytes[..bytes.len() - 1]).to_string();
+        let game_callback = self.callback;
+        if !is_game_runtime_in_break() {
+            get_game_runtime_mut().spawn(async move {
+                let mut bytes = str.encode_utf16().collect::<Vec<_>>();
+                bytes.push(0);
+                (game_callback)(0,bytes.as_ptr());
+            });
+            return;
+        }
+        let mut bytes = str.encode_utf16().collect::<Vec<_>>();
+        bytes.push(0);
+        (game_callback)(0,bytes.as_ptr());
+    }
+}
+
 /// Accept one connection from the debugger adapter and process commands from it until it
 /// disconnects.
 ///
 /// We accept only a single connection at a time, if multiple adapters attempt to connect
 /// we'll process them in sequence.
-async fn handle_connection(
+async fn handle_connection<T:SendToUnreal>(
     stream: &mut TcpStream,
-    cb: UnrealCallback,
+    cb: T,
     crx: &mut UnboundedReceiver<()>,
 ) -> Result<ConnectionResult, tokio::io::Error> {
     // Create a new message passing channel and send the sender to the debugger.
     // It's convenient to have a per-connection message channel as it also serves
     // as an indicator within the debugger to tell if the interface is connected.
-    let (etx, mut erx) = mpsc::unbounded_channel();
+    let (etx, mut erx) = mpsc::unbounded();
 
     {
         let mut hnd = DEBUGGER.lock().unwrap();
@@ -257,15 +436,15 @@ async fn handle_connection(
 
     loop {
         select! {
-            command = deserializer.try_next() => {
+            command = deserializer.try_next().compat().fuse() => {
                 match command? {
                     Some(command) => {
                         match dispatch_command(command) {
                             CommandAction::Nothing => (),
-                            CommandAction::Callback(vec) => (cb)(vec.as_ptr()),
+                            CommandAction::Callback(vec) => cb.send_bytes(&vec),
                             CommandAction::MultiStepCallback(vec) => {
                                 for v in vec {
-                                    (cb)(v.as_ptr());
+                                    cb.send_bytes(&v);
                                 }
                             }
                         }
@@ -273,9 +452,9 @@ async fn handle_connection(
                     None => break,
                 };
             },
-            evt = erx.recv() => {
+            evt = erx.next() => {
                 match evt {
-                    Some(evt) => if let Err(e) = serializer.send(evt).await {
+                    Some(evt) => if let Err(e) = serializer.send(evt).compat().await {
                         // If we fail to send the packet then the connection has been
                         // interrupted and we can return.
                         log::error!("Error sending event to adapter: {e}");
@@ -284,7 +463,7 @@ async fn handle_connection(
                     None => break,
                 };
             },
-            _ = crx.recv() => {
+            _ = crx.next() => {
                 log::info!("Received shutdown message. Closing connection.");
                 return Ok(ConnectionResult::Shutdown);
             }
@@ -315,6 +494,22 @@ fn dispatch_command(command: UnrealCommand) -> CommandAction {
         Err(DebuggerError::NotConnected) => {
             log::error!("Not connected");
             CommandAction::Nothing
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_va_main_loop() {
+        extern "C" fn cb(_:i32,_: *const u16) {}
+        va_initialized(cb);
+
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(100));
+            get_runtime_mut().tick();
         }
     }
 }

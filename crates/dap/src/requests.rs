@@ -92,6 +92,8 @@ pub struct AttachArguments {
     /// Override the log level with the given log spec. Can be one of 'trace', 'debug', 'info',
     /// 'warn', or 'error'; or a more complex log spec.
     pub log_level: Option<String>,
+    /// debugger interface implementation "auto" or "va"
+    pub debugger_interface:Option<String>
 }
 
 /// Arguments for a [`Command::Evaluate`] command.
@@ -124,6 +126,8 @@ pub struct InitializeArguments {
     /// stack frames. In such an editor we will not have line information for any
     /// stack frame other than the top-most unless the stack hack is enabled.
     pub supports_invalidated_event: Option<bool>,
+    /// debugger interface implementation "auto" or "va"
+    pub debugger_interface:Option<String>
 }
 
 /// Arguments for a [`Command::Launch`] request.
@@ -155,7 +159,9 @@ pub struct LaunchArguments {
     /// The connection attempts to make.
     pub connect_attempts: Option<u32>,
     /// The connection timeout in seconds.
-    pub connect_timeout_seconds:Option<f32>
+    pub connect_timeout_seconds:Option<f32>,
+    /// debugger interface implementation "auto" or "va"
+    pub debugger_interface:Option<String>
 }
 
 /// Arguments for a [`Command::Scopes`] request.

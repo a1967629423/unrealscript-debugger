@@ -28,11 +28,20 @@ pub struct ClientConfig {
 
     /// Auto resume after the first breakpoint
     pub auto_resume: bool,
+
+    /// If true, the client supports the `va` interface.
+    pub use_va_interface:bool,
 }
 
 impl ClientConfig {
     /// Create a new client config with default settings.
     pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
         ClientConfig {
             one_based_lines: true,
             supports_variable_type: false,
@@ -40,12 +49,7 @@ impl ClientConfig {
             source_roots: vec![],
             enable_stack_hack: false,
             auto_resume: false,
+            use_va_interface:false,
         }
-    }
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self::new()
     }
 }

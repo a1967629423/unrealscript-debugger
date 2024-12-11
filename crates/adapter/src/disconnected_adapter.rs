@@ -71,14 +71,7 @@ impl<C: Client> DisconnectedAdapter<C> {
     ) -> Self {
         DisconnectedAdapter {
             client,
-            config: ClientConfig {
-                one_based_lines: true,
-                supports_variable_type: false,
-                supports_invalidated_event: false,
-                source_roots: vec![],
-                enable_stack_hack: false,
-                auto_resume: false,
-            },
+            config: ClientConfig::new(),
             sender,
             receiver,
         }
@@ -152,9 +145,7 @@ impl<C: Client> DisconnectedAdapter<C> {
             one_based_lines: args.lines_start_at1.unwrap_or(true),
             supports_variable_type: args.supports_variable_type.unwrap_or(false),
             supports_invalidated_event: args.supports_invalidated_event.unwrap_or(false),
-            source_roots: vec![],
-            enable_stack_hack: false,
-            auto_resume: false,
+            ..Default::default()
         };
 
         // Send the response.
@@ -215,6 +206,7 @@ impl<C: Client> DisconnectedAdapter<C> {
         let port = DEFAULT_PORT;
         self.config.source_roots = args.source_roots.clone().unwrap_or_default();
         self.config.enable_stack_hack = args.enable_stack_hack.unwrap_or(true);
+        self.config.use_va_interface = args.debugger_interface.as_ref().map(|s| s == "va").unwrap_or(false);
         match self.connect_to_interface(port,TcpConnectTimeoutConfig::default()) {
             Ok(connection) => {
                 // Connection succeeded: Respond with a success response and return
@@ -227,7 +219,7 @@ impl<C: Client> DisconnectedAdapter<C> {
                     self.config,
                     Box::new(connection),
                     None,
-                    args.log_level.as_ref().cloned(),
+                    args.log_level.as_ref().cloned()
                 ))
             }
             Err(e) => {
@@ -247,6 +239,7 @@ impl<C: Client> DisconnectedAdapter<C> {
         &self,
         args: &LaunchArguments,
         auto_debug: bool,
+        use_va_interface: bool,
     ) -> Result<Child, UnrealscriptAdapterError> {
         // Find the program to run
         let program = args
@@ -264,7 +257,11 @@ impl<C: Client> DisconnectedAdapter<C> {
         // Append '-autoDebug' if we're launching so we can be sure the interface will launch and
         // we can connect.
         if auto_debug {
-            command = command.arg("-autoDebug");
+            if use_va_interface {
+                command = command.arg("-vaDebug");
+            } else {
+                command = command.arg("-autoDebug");
+            }
         }
 
         log::info!(
@@ -370,8 +367,8 @@ impl<C: Client> DisconnectedAdapter<C> {
         // attach, but that also requires the user to enable the debugger from the unreal side with
         // 'toggledebugger'.
         let auto_debug = !matches!(args.no_debug, Some(true));
-
-        match self.spawn_debuggee(args, auto_debug) {
+        self.config.use_va_interface = args.debugger_interface.as_ref().map(|s| s == "va").unwrap_or(false);
+        match self.spawn_debuggee(args, auto_debug,self.config.use_va_interface) {
             Ok(child) => {
                 // If we're auto-debugging we can now connect to the interface.
                 if auto_debug {
@@ -384,13 +381,14 @@ impl<C: Client> DisconnectedAdapter<C> {
                             self.config.auto_resume = args.auto_resume.unwrap_or(false);
                             self.config.enable_stack_hack = args.enable_stack_hack.unwrap_or(true);
 
+
                             Ok(UnrealscriptAdapter::new(
                                 self.client,
                                 self.receiver,
                                 self.config,
                                 Box::new(connection),
                                 Some(child),
-                                args.log_level.as_ref().cloned(),
+                                args.log_level.as_ref().cloned()
                             ))
                         }
                         Err(e) => {

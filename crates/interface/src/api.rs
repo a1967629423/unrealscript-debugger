@@ -9,14 +9,101 @@
 /// it as accepting a 'const char*' parameter but we use u8 here. This is
 /// for convenience since it is primarily passed strings.
 pub type UnrealCallback = extern "C" fn(*const u8) -> ();
+/// TODO:
+pub type UnrealVADebugCallback = extern "C" fn(i32,LPCWSTR) -> ();
 
 use std::ffi::c_char;
 
-use crate::lifetime::initialize;
+use crate::{game_runtime_is_initialized, get_game_runtime_option_mut, get_runtime_mut, get_runtime_option_mut, init_game_runtime, lifetime::{initialize, va_initialized}, set_game_runtime_in_break};
 use common::WatchKind;
 use log;
+use winapi::shared::{minwindef::DWORD, ntdef::LPCWSTR};
 
 use crate::DEBUGGER;
+
+/// TODO: This is a list of all the commands that Unreal can send to the debugger interface.
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+#[repr(i32)]
+pub enum VACMD {
+    /// Show the DLL form.
+    ShowDllForm,
+    /// Add a class to the class hierarchy.
+	EditorCommand,
+    /// Clear the class hierarchy.
+	EditorLoadTextBuffer,
+    /// Build the class hierarchy.
+	AddClassToHierarchy,
+    /// Clear the class hierarchy.
+	ClearHierarchy,
+    /// Build the class hierarchy.
+	BuildHierarchy,
+    /// Clear the watch list.
+	ClearWatch,
+    /// Add a watch to the watch list.
+	AddWatch,
+    /// Unused.
+	SetCallback,
+    ///Add a breakpoint.
+	AddBreakpoint,
+    /// Remove a breakpoint.
+	RemoveBreakpoint,
+    /// Focus the given class in the editor.
+	EditorGotoLine,
+    /// Add a line to the log.
+	AddLineToLog,
+    /// Clear the call stack.
+	EditorLoadClass,
+    /// Add a class to the call stack.
+	CallStackClear,
+    /// Record the object name for the current object.
+	CallStackAdd,
+    /// Unused.
+	DebugWindowState,
+    /// Clear the watch list.
+    ClearAWatch,
+    /// Add a watch to the watch list.
+	AddAWatch,
+    /// Lock the watch list.
+	LockList,
+    /// Unlock the watch list.
+	UnlockList,
+    /// Set the current object name.
+    SetCurrentObjectName,
+    /// VA interface End
+	GameEnded
+}
+
+impl TryFrom<i32> for VACMD {
+    type Error = ();
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(VACMD::ShowDllForm),
+            1 => Ok(VACMD::EditorCommand),
+            2 => Ok(VACMD::EditorLoadTextBuffer),
+            3 => Ok(VACMD::AddClassToHierarchy),
+            4 => Ok(VACMD::ClearHierarchy),
+            5 => Ok(VACMD::BuildHierarchy),
+            6 => Ok(VACMD::ClearWatch),
+            7 => Ok(VACMD::AddWatch),
+            8 => Ok(VACMD::SetCallback),
+            9 => Ok(VACMD::AddBreakpoint),
+            10 => Ok(VACMD::RemoveBreakpoint),
+            11 => Ok(VACMD::EditorGotoLine),
+            12 => Ok(VACMD::AddLineToLog),
+            13 => Ok(VACMD::EditorLoadClass),
+            14 => Ok(VACMD::CallStackClear),
+            15 => Ok(VACMD::CallStackAdd),
+            16 => Ok(VACMD::DebugWindowState),
+            17 => Ok(VACMD::ClearAWatch),
+            18 => Ok(VACMD::AddAWatch),
+            19 => Ok(VACMD::LockList),
+            20 => Ok(VACMD::UnlockList),
+            21 => Ok(VACMD::SetCurrentObjectName),
+            22 => Ok(VACMD::GameEnded),
+            _ => Err(()),
+        }
+    }
+}
 
 /// Called once from Unreal when the debugger interface is initialized, passing the callback
 /// function to use.
@@ -220,4 +307,46 @@ pub extern "C" fn SetCurrentObjectName(obj_name: *const c_char) {
 #[no_mangle]
 pub extern "C" fn DebugWindowState(code: i32) {
     log::trace!("DebugWindowState {code}");
+}
+/// VA interface
+#[no_mangle]
+pub extern "C" fn IPCSetCallbackUC(callback:Option<UnrealVADebugCallback>) {
+    let cb = callback.expect("Unreal should never give us a null callback.");
+    va_initialized(cb);
+}
+
+/// VA interface Unreal tick notification.
+#[no_mangle]
+pub extern "C" fn IPCNotifyBeginTick() {
+    if !game_runtime_is_initialized() {
+        init_game_runtime();
+    }
+    set_game_runtime_in_break(false);
+    if let Some(rt) = get_game_runtime_option_mut().as_mut() {
+        rt.tick();
+    }
+}
+
+/// VA interface 
+#[no_mangle]
+pub extern "C" fn IPCNotifyDebugInfo(param:u32) -> u32 {
+    0
+}
+
+/// VA interface
+#[no_mangle]
+pub extern "C" fn IPCnFringeSupport(version:i32) {
+    log::trace!("IPCnFringeSupport {version}");
+}
+
+/// VA interface
+#[no_mangle]
+pub extern "C" fn IPCSendCommandToVS(cmd_id:i32,dw_1:DWORD,dw_2:DWORD,s_1:LPCWSTR,s_2:LPCWSTR) -> i32 {
+    let Ok(cmd) = VACMD::try_from(cmd_id) else {
+        log::error!("Unknown command id: {cmd_id}");
+        return -1;
+    };
+    let mut hnd = DEBUGGER.lock().unwrap();
+    let dbg = hnd.as_mut().unwrap();
+    dbg.ipc_send_command_to_vs(cmd,dw_1,dw_2,s_1,s_2)
 }

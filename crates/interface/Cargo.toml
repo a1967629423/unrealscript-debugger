@@ -12,6 +12,8 @@ tokio-serde = { version = "0.8", features = ["json"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 thiserror = "1.0"
+async-net = "2.0.0"
+async-compat = "0.2.4"
 common.workspace = true
 pkg-version = "1.0.0"
 winapi = { version = "0.3.9", features = [ "libloaderapi", "stringapiset" ] }

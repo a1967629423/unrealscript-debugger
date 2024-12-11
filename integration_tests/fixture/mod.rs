@@ -47,52 +47,49 @@ pub async fn setup_with_client<C: Client>(
     sender: std::sync::mpsc::Sender<AdapterMessage>,
     receiver: std::sync::mpsc::Receiver<AdapterMessage>,
 ) -> (UnrealscriptAdapter<C>, Debugger, SplitStream<TcpFrame>) {
-    let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
+    // let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    // let port = tcp.local_addr().unwrap().port();
 
-    let adapter = UnrealscriptAdapter::new(
-        client,
-        receiver,
-        ClientConfig {
-            one_based_lines: true,
-            supports_variable_type: true,
-            supports_invalidated_event: false,
-            source_roots: vec![],
-            enable_stack_hack: false,
-            auto_resume: false,
-        },
-        Box::new(TcpConnection::connect(port, sender,TcpConnectTimeoutConfig::default()).unwrap()),
-        None,
-        None,
-    );
+    // let adapter = UnrealscriptAdapter::new(
+    //     client,
+    //     receiver,
+    //     ClientConfig {
+    //         supports_variable_type: true,
+    //         ..Default::default()
+    //     },
+    //     Box::new(TcpConnection::connect(port, sender,TcpConnectTimeoutConfig::default()).unwrap()),
+    //     None,
+    //     None,
+    // );
 
-    log::trace!("Created adapter");
-    let (ctx, _crx) = unbounded_channel();
-    let mut dbg = Debugger::new(ctx, None);
-    let (stream, _addr) = tcp.accept().await.unwrap();
-    log::trace!("Got connection");
+    // log::trace!("Created adapter");
+    // let (ctx, _crx) = unbounded_channel();
+    // let mut dbg = Debugger::new(ctx, None);
+    // let (stream, _addr) = tcp.accept().await.unwrap();
+    // log::trace!("Got connection");
 
-    let frame = tokio_util::codec::Framed::new(stream, LengthDelimitedCodec::new());
+    // let frame = tokio_util::codec::Framed::new(stream, LengthDelimitedCodec::new());
 
-    // Build a json formatter that can deserialize events and serialize commands.
-    let format: Json<UnrealCommand, UnrealInterfaceMessage> = Json::default();
+    // // Build a json formatter that can deserialize events and serialize commands.
+    // let format: Json<UnrealCommand, UnrealInterfaceMessage> = Json::default();
 
-    // Build a source + sink for that json format on top of our framing system.
-    let tcp_stream = tokio_serde::Framed::new(frame, format);
-    let (mut tcp_tx, tcp_rx) = tcp_stream.split();
+    // // Build a source + sink for that json format on top of our framing system.
+    // let tcp_stream = tokio_serde::Framed::new(frame, format);
+    // let (mut tcp_tx, tcp_rx) = tcp_stream.split();
 
-    let (tx, mut rx) = unbounded_channel();
-    dbg.new_connection(tx);
+    // let (tx, mut rx) = unbounded_channel();
+    // dbg.new_connection(tx);
 
-    // Spawn a task to monitor the receiving side of events and push them through the TCP
-    // connection.
-    tokio::task::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            tcp_tx.send(msg).await.unwrap();
-        }
-    });
+    // // Spawn a task to monitor the receiving side of events and push them through the TCP
+    // // connection.
+    // tokio::task::spawn(async move {
+    //     while let Some(msg) = rx.recv().await {
+    //         tcp_tx.send(msg).await.unwrap();
+    //     }
+    // });
 
-    (adapter, dbg, tcp_rx)
+    // (adapter, dbg, tcp_rx)
+    todo!()
 }
 
 #[allow(dead_code)]
