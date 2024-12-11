@@ -271,10 +271,10 @@ async fn create_tcp_listener(
         addr.set_port(port);
     }
 
-    return Err(tokio::io::Error::new(
+    Err(tokio::io::Error::new(
         tokio::io::ErrorKind::AddrInUse,
         "Failed to bind to port",
-    ));
+    ))
 }
 
 /// The main worker thread for the debugger interface. This is created when the

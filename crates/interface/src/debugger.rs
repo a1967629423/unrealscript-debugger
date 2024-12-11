@@ -659,7 +659,7 @@ impl Debugger {
                     PendingVariableRequest::UserWatch => {
                         // The new user watch will be the last one added to the user watchlist,
                         // so it's the last child of the root.
-                        let var = self.user_watches.get(0).and_then(|n| {
+                        let var = self.user_watches.first().and_then(|n| {
                             n.children
                                 .last()
                                 .map(|c| self.user_watches[*c].to_variable(*c))

@@ -169,7 +169,7 @@ impl TcpConnectTimeoutConfig {
         Self {
             connect_attempts: attempts.unwrap_or(DEFAULT_CONNECT_ATTEMPTS),
             connect_timeout: timeout_sec
-                .map(|timeout_sec| Duration::from_secs_f32(timeout_sec))
+                .map(Duration::from_secs_f32)
                 .unwrap_or(DEFAULT_CONNECT_TIMEOUT),
         }
     }
