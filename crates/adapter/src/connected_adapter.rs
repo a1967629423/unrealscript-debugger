@@ -568,7 +568,7 @@ where
             let canonical = candidate
                 .canonicalize()
                 .inspect_err(|e| {
-                    log::error!("Failed to canonicalize path {candidate:#?}");
+                    log::error!("Failed to canonicalize path {candidate:#?} error: {e}");
                 })
                 .ok()?;
 
