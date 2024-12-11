@@ -15,7 +15,8 @@ pub type UnrealVADebugCallback = extern "C" fn(i32, LPCWSTR) -> ();
 use std::ffi::c_char;
 
 use crate::{
-    game_runtime_is_initialized, get_game_runtime_option_mut, init_game_runtime,
+    consume_game_runtime_pending_commands, game_runtime_is_initialized,
+    get_game_runtime_option_mut, init_game_runtime,
     lifetime::{initialize, va_initialized},
     set_game_runtime_in_break,
 };
@@ -312,11 +313,14 @@ pub extern "C" fn SetCurrentObjectName(obj_name: *const c_char) {
 pub extern "C" fn DebugWindowState(code: i32) {
     log::trace!("DebugWindowState {code}");
 }
+
 /// VA interface
 #[no_mangle]
 pub extern "C" fn IPCSetCallbackUC(callback: Option<UnrealVADebugCallback>) {
     let cb = callback.expect("Unreal should never give us a null callback.");
     va_initialized(cb);
+
+    // send_command_by_va_callback(b"break");
 }
 
 /// VA interface Unreal tick notification.
@@ -329,12 +333,13 @@ pub extern "C" fn IPCNotifyBeginTick() {
     if let Some(rt) = get_game_runtime_option_mut().as_mut() {
         rt.tick();
     }
+    consume_game_runtime_pending_commands();
 }
 
 /// VA interface
 #[no_mangle]
 pub extern "C" fn IPCNotifyDebugInfo(_param: u32) -> u32 {
-    0
+    1
 }
 
 /// VA interface

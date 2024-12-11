@@ -36,6 +36,7 @@
 //! The 'initialize' function is used to set up the debugger state when we are
 //! starting a debugging session.
 
+use std::sync::Mutex;
 use std::{net::SocketAddr, thread};
 
 use common::{
@@ -54,7 +55,7 @@ use crate::{
     debugger::{CommandAction, Debugger, DebuggerError},
     DEBUGGER, LOGGER, VARIABLE_REQUST_CONDVAR,
 };
-use crate::{get_game_runtime_mut, is_game_runtime_in_break};
+use crate::{add_game_runtime_pending_command, is_game_runtime_in_break};
 use async_compat::{Compat, CompatExt};
 
 /// Initialize the debugger instance. This should be called exactly once when
@@ -123,11 +124,12 @@ pub fn initialize(cb: UnrealCallback) {
         dbg.replace(Debugger::new(ctx, Some(handle)));
     }
 }
+static IPC_CALLBACK: Mutex<Option<UnrealVADebugCallback>> = Mutex::new(None);
 /// TODO
 pub fn va_initialized(cb: UnrealVADebugCallback) {
     if let Ok(dbg) = DEBUGGER.lock().as_mut() {
         assert!(dbg.is_none(), "Initialize already called.");
-
+        *IPC_CALLBACK.lock().unwrap() = Some(cb);
         // Start the logger. If this fails there isn't much we can do.
         init_logger();
 
@@ -386,20 +388,30 @@ impl SendToUnreal for VaDebugSendToUnreal {
     fn send_bytes(&self, bytes: &[u8]) {
         let str = String::from_utf8_lossy(&bytes[..bytes.len() - 1]).to_string();
         let game_callback = self.callback;
+        let send_command_cb = move || {
+            let mut bytes = str.encode_utf16().collect::<Vec<_>>();
+            bytes.push(0);
+            (game_callback)(0, bytes.as_ptr());
+        };
         if !is_game_runtime_in_break() {
-            get_game_runtime_mut().spawn(async move {
-                let mut bytes = str.encode_utf16().collect::<Vec<_>>();
-                bytes.push(0);
-                (game_callback)(0, bytes.as_ptr());
-            });
+            add_game_runtime_pending_command(send_command_cb);
             return;
         }
-        let mut bytes = str.encode_utf16().collect::<Vec<_>>();
-        bytes.push(0);
-        (game_callback)(0, bytes.as_ptr());
+        send_command_cb();
     }
 }
-
+/// TODO
+pub fn send_command_by_va_callback(bytes: &[u8]) {
+    let send_to_unreal = VaDebugSendToUnreal::new(
+        IPC_CALLBACK
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("va callback not initialized")
+            .clone(),
+    );
+    send_to_unreal.send_bytes(bytes);
+}
 /// Accept one connection from the debugger adapter and process commands from it until it
 /// disconnects.
 ///

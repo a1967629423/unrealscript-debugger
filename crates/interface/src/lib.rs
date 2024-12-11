@@ -10,7 +10,7 @@
 //! arguments on to corresponding methods on the debugger state instance.
 #![warn(missing_docs)]
 
-use std::sync::{atomic::AtomicBool, Condvar, Mutex};
+use std::{future::Future, sync::{atomic::AtomicBool, Condvar, Mutex}};
 
 use common::Version;
 use debugger::Debugger;
@@ -32,6 +32,7 @@ unsafe impl Sync for SingleThreadedRuntime {}
 static RUNTIME: Option<SingleThreadedRuntime> = None;
 static GAME_RUNTIME: Option<SingleThreadedRuntime> = None;
 static GAME_RUNTIME_IN_BREAK: AtomicBool = AtomicBool::new(false);
+static GAME_RUNTIME_PENDING_COMMANDS:Mutex<Vec<Box<dyn FnOnce() + Send  + 'static>>> = Mutex::new(Vec::new());
 /// The debugger state. Calls from Unreal are dispatched into this instance.
 static DEBUGGER: Mutex<Option<Debugger>> = Mutex::new(None);
 static LOGGER: Mutex<Option<LoggerHandle>> = Mutex::new(None);
@@ -42,6 +43,23 @@ static INTERFACE_VERSION: Version = Version {
     patch: pkg_version_patch!(),
 };
 
+/// TODO
+pub fn add_game_runtime_pending_command<F: FnOnce() + Send  + 'static>(f: F) {
+    GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap().push(Box::new(f));
+}
+/// TODO
+pub fn add_game_runtime_async_task<F:Future<Output=()> + Send + 'static>(f: F) {
+    add_game_runtime_pending_command(move || {
+        get_game_runtime_mut().spawn(f);
+    });
+}
+/// TODO
+pub fn consume_game_runtime_pending_commands() {
+    let mut commands = GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap();
+    for command in commands.drain(..) {
+        command();
+    }
+}
 /// TODO
 pub fn get_runtime_option_mut() -> &'static mut Option<SingleThreadedRuntime> {
     #[allow(mutable_transmutes)]

@@ -1124,10 +1124,10 @@ impl Debugger {
     ) -> i32 {
         let s_1 = wide_str_to_string(s_1, MAX_WIDECHAR_CAPACITY);
         let s_2 = wide_str_to_string(s_2, MAX_WIDECHAR_CAPACITY);
+        log::trace!("IPC Receive Command: {command:?} {dw_1} {dw_2} {s_1:?} {s_2:?}");
 
         match command {
             VACMD::ShowDllForm => {
-                log::trace!("ShowDllForm");
                 self.show_dll_form();
                 set_game_runtime_in_break(true);
             }
@@ -1153,7 +1153,6 @@ impl Debugger {
                 let parent = dw_2 as i32;
                 let object_name = s_1.expect("add watch require s_1");
                 let data = s_2.expect("add watch require s_2");
-                log::trace!("Add watch: {:?} {parent} {object_name} {data}", watch_kind);
                 let (name, ty, is_array) = self.decompose_name_inner(object_name);
                 self.add_watch_inner(watch_kind, parent, name, ty, is_array, data);
             }
@@ -1162,19 +1161,16 @@ impl Debugger {
             }
             VACMD::EditorGotoLine => {
                 if s_1.is_none() {
-                    log::trace!("EditorGotoLine code: {dw_1}");
                     self.goto_line(dw_1 as i32);
                 }
             }
 
             VACMD::RemoveBreakpoint => {
                 let class_name = s_1.expect("remove breakpoint need class_name");
-                log::trace!("Remove breakpoint: {class_name} {dw_1}");
                 self.remove_breakpoint_inner(class_name, dw_1 as i32);
             }
             VACMD::AddBreakpoint => {
                 let class_name = s_1.expect("add breakpoint require class name");
-                log::trace!("Add breakpoint: {class_name} {dw_1}");
                 self.add_breakpoint_inner(class_name, dw_1 as i32);
             }
             VACMD::CallStackClear => {
@@ -1185,7 +1181,6 @@ impl Debugger {
                 self.add_frame_inner(class_name);
             }
             VACMD::DebugWindowState => {
-                log::trace!("DebugWindowState code: {}", dw_1);
             }
             VACMD::LockList => {
                 self.lock_watchlist();
