@@ -50,6 +50,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_serde::formats::SymmetricalJson;
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
+use crate::debugger::InterfaceType;
 use crate::{
     api::{UnrealCallback, UnrealVADebugCallback},
     debugger::{CommandAction, Debugger, DebuggerError},
@@ -192,6 +193,7 @@ pub fn va_initialized(cb: UnrealVADebugCallback) {
         // Construct the debugger state.
         let mut new_dbg = Debugger::new(ctx, Some(handle));
         new_dbg.set_saw_show_dll(true);
+        new_dbg.interface_type = InterfaceType::VA;
         dbg.replace(new_dbg);
     }
 }
@@ -434,7 +436,10 @@ async fn handle_connection<T: SendToUnreal>(
     }
 
     let (reader, writer) = stream.split();
-    let delimiter = FramedRead::new(reader, LengthDelimitedCodec::new());
+    let mut codec = LengthDelimitedCodec::new();
+    // for now we limit the maximum frame size to 128MB.
+    codec.set_max_frame_length(128 * 1_024 * 1_024);
+    let delimiter = FramedRead::new(reader, codec);
 
     let mut deserializer = tokio_serde::SymmetricallyFramed::new(
         delimiter,

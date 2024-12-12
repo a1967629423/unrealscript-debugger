@@ -30,7 +30,14 @@ const DEFAULT_WIDECHAR_CAPACITY: usize = 512;
 const DEFAULT_NARROW_CAPACITY: usize = 1024;
 
 const MAX_WIDECHAR_CAPACITY: usize = 4096;
-
+/// TODO
+#[derive(Debug,Clone)]
+pub enum InterfaceType {
+    /// Auto interface
+    Auto,
+    /// VA interface
+    VA
+}
 /// A struct representing the debugger state.
 pub struct Debugger {
     shutdown_sender: UnboundedSender<()>,
@@ -71,6 +78,9 @@ pub struct Debugger {
 
     // A narrow char buffer for encoding and decoding strings.
     narrow_buffer: Vec<u8>,
+
+    /// The interface type to use
+    pub interface_type: InterfaceType,
 }
 
 #[derive(Debug)]
@@ -192,6 +202,7 @@ impl Debugger {
             stack_hack: None,
             widechar_buffer: Vec::with_capacity(DEFAULT_WIDECHAR_CAPACITY),
             narrow_buffer: Vec::with_capacity(DEFAULT_NARROW_CAPACITY),
+            interface_type: InterfaceType::Auto,
         }
     }
 
@@ -1124,7 +1135,6 @@ impl Debugger {
     ) -> i32 {
         let s_1 = wide_str_to_string(s_1, MAX_WIDECHAR_CAPACITY);
         let s_2 = wide_str_to_string(s_2, MAX_WIDECHAR_CAPACITY);
-        log::trace!("IPC Receive Command: {command:?} {dw_1} {dw_2} {s_1:?} {s_2:?}");
 
         match command {
             VACMD::ShowDllForm => {
@@ -1154,7 +1164,7 @@ impl Debugger {
                 let object_name = s_1.expect("add watch require s_1");
                 let data = s_2.expect("add watch require s_2");
                 let (name, ty, is_array) = self.decompose_name_inner(object_name);
-                self.add_watch_inner(watch_kind, parent, name, ty, is_array, data);
+                return self.add_watch_inner(watch_kind, parent, name, ty, is_array, data);
             }
             VACMD::AddLineToLog => {
                 self.add_line_to_log_inner(s_1.unwrap_or_default());
@@ -1196,6 +1206,9 @@ impl Debugger {
             }
             _ => {}
         }
+
+        log::trace!("IPC Receive Command: {command:?}");
+
         0
     }
 }
