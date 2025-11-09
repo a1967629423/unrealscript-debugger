@@ -48,7 +48,9 @@ static INTERFACE_VERSION: Version = Version {
 /// Commands are queued and executed later when [`consume_game_runtime_pending_commands`] is called.
 /// This is useful for deferring work that needs to run on the game runtime thread.
 pub fn add_game_runtime_pending_command<F: FnOnce() + Send  + 'static>(f: F) {
-    GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap().push(Box::new(f));
+    let mut commands = GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap();
+    commands.push(Box::new(f));
+    log::trace!("Added pending command, queue size: {}", commands.len());
 }
 
 /// Schedules an async task to run on the game runtime.
@@ -67,6 +69,10 @@ pub fn add_game_runtime_async_task<F:Future<Output=()> + Send + 'static>(f: F) {
 /// [`add_game_runtime_pending_command`] and [`add_game_runtime_async_task`].
 pub fn consume_game_runtime_pending_commands() {
     let mut commands = GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap();
+    let count = commands.len();
+    if count > 0 {
+        log::trace!("Consuming {} pending commands", count);
+    }
     for command in commands.drain(..) {
         command();
     }
