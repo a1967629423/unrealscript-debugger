@@ -1147,6 +1147,10 @@ impl Debugger {
                 set_game_runtime_in_break(true);
                 // Consume any pending commands that were queued before the break.
                 // This ensures commands sent just before the break are still executed.
+                // Without this, commands queued while the game was running but not yet
+                // consumed by IPCNotifyBeginTick would never execute, causing the
+                // debugger to become unresponsive.
+                log::trace!("Entering break state, consuming any pending commands");
                 crate::consume_game_runtime_pending_commands();
             }
             VACMD::AddClassToHierarchy => {

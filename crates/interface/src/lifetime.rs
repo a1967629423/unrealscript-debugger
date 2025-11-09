@@ -396,10 +396,15 @@ impl SendToUnreal for VaDebugSendToUnreal {
             (game_callback)(0, bytes.as_ptr());
         };
         if !is_game_runtime_in_break() {
-            log::trace!("add runtime pending command");
+            // Game is running - queue command to be executed on next tick
+            log::trace!("Game is running, queueing command for next tick: {}", 
+                       str.chars().take(50).collect::<String>());
             add_game_runtime_pending_command(send_command_cb);
             return;
         }
+        // Game is in break - execute command immediately
+        log::trace!("Game is in break, executing command immediately: {}", 
+                   str.chars().take(50).collect::<String>());
         send_command_cb();
     }
 }
