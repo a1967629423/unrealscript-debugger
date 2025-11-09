@@ -4,15 +4,15 @@
 //! of message that can be sent between the components:
 //!
 //! - Commands are sent from the adapter to the interface, and instruct the debugger
-//! to do something (e.g. set a breakpoint, or step over the next line).
+//!   to do something (e.g. set a breakpoint, or step over the next line).
 //!
 //! - Responses are sent from the interface to the adapter, always in predictable
-//! ways: A specific command will result in zero or more responses, and the response
-//! set for a specific command has a fixed structure (e.g. a set breakpoint command
-//! results in exactly one set breakpoint response).
+//!   ways: A specific command will result in zero or more responses, and the response
+//!   set for a specific command has a fixed structure (e.g. a set breakpoint command
+//!   results in exactly one set breakpoint response).
 //!
 //! - Events are unpredictable, asynchronous events that are not tied to a particular
-//! command (e.g. a log line being added or a break event).
+//!   command (e.g. a log line being added or a break event).
 
 #![warn(missing_docs)]
 
