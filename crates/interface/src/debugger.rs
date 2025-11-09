@@ -1145,6 +1145,9 @@ impl Debugger {
             VACMD::ShowDllForm => {
                 self.show_dll_form();
                 set_game_runtime_in_break(true);
+                // Consume any pending commands that were queued before the break.
+                // This ensures commands sent just before the break are still executed.
+                crate::consume_game_runtime_pending_commands();
             }
             VACMD::AddClassToHierarchy => {
                 let class_name = s_1.expect("add class to hierarchy require s_1");
