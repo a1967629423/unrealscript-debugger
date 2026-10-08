@@ -65,9 +65,14 @@ pub fn add_game_runtime_async_task<F:Future<Output=()> + Send + 'static>(f: F) {
 ///
 /// This should be called periodically to process commands added via
 /// [`add_game_runtime_pending_command`] and [`add_game_runtime_async_task`].
+///
+/// The queue lock is released before running the commands: they call into Unreal, which
+/// can synchronously call back into the interface (e.g. `GameEnded`, which waits for the
+/// interface thread to exit), while the interface thread may be queueing new commands.
+/// Commands queued while these run are executed on the next call.
 pub fn consume_game_runtime_pending_commands() {
-    let mut commands = GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap();
-    for command in commands.drain(..) {
+    let commands = std::mem::take(&mut *GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap());
+    for command in commands {
         command();
     }
 }

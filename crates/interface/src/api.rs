@@ -17,7 +17,7 @@ use std::ffi::c_char;
 use crate::{
     consume_game_runtime_pending_commands, game_runtime_is_initialized,
     get_game_runtime_option_mut, init_game_runtime,
-    lifetime::{initialize, va_initialized},
+    lifetime::{initialize, join_interface_thread, va_initialized},
     set_game_runtime_in_break,
 };
 use common::WatchKind;
@@ -272,9 +272,15 @@ pub extern "C" fn EditorGotoLine(line: i32, _highlight: i32) {
 /// A line has been added to the log.
 #[no_mangle]
 pub extern "C" fn AddLineToLog(text: *const c_char) {
-    let mut hnd = DEBUGGER.lock().unwrap();
-    let dbg = hnd.as_mut().unwrap();
-    dbg.add_line_to_log(text);
+    let handle = {
+        let mut hnd = DEBUGGER.lock().unwrap();
+        let dbg = hnd.as_mut().unwrap();
+        dbg.add_line_to_log(text);
+        dbg.take_shutdown_handle()
+    };
+    // If this ended the session, wait for the interface thread to exit before Unreal unloads
+    // us. This must happen after releasing the debugger lock (see `Debugger::game_ended`).
+    join_interface_thread(handle);
 }
 
 /// Clear the call stack.
@@ -361,7 +367,13 @@ pub extern "C" fn IPCSendCommandToVS(
         log::error!("Unknown command id: {cmd_id}");
         return -1;
     };
-    let mut hnd = DEBUGGER.lock().unwrap();
-    let dbg = hnd.as_mut().unwrap();
-    dbg.ipc_send_command_to_vs(cmd, dw_1, dw_2, s_1, s_2)
+    let (result, handle) = {
+        let mut hnd = DEBUGGER.lock().unwrap();
+        let dbg = hnd.as_mut().unwrap();
+        let result = dbg.ipc_send_command_to_vs(cmd, dw_1, dw_2, s_1, s_2);
+        (result, dbg.take_shutdown_handle())
+    };
+    // See `AddLineToLog`: join the interface thread only after releasing the debugger lock.
+    join_interface_thread(handle);
+    result
 }
