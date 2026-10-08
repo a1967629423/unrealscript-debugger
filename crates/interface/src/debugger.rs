@@ -24,7 +24,8 @@ use crate::api::VACMD;
 use crate::stackhack::{StackHack, DEFAULT_MODEL};
 use crate::{set_game_runtime_in_break, INTERFACE_VERSION, LOGGER, VARIABLE_REQUST_CONDVAR};
 
-const MAGIC_DISCONNECT_STRING: &str = "Log: Detaching UnrealScript Debugger (currently detached)";
+pub(crate) const MAGIC_DISCONNECT_STRING: &str =
+    "Log: Detaching UnrealScript Debugger (currently detached)";
 
 const DEFAULT_WIDECHAR_CAPACITY: usize = 512;
 const DEFAULT_NARROW_CAPACITY: usize = 1024;
@@ -42,6 +43,8 @@ pub enum InterfaceType {
 pub struct Debugger {
     shutdown_sender: UnboundedSender<()>,
     handle: Option<JoinHandle<()>>,
+    /// Set by [`Debugger::game_ended`] when Unreal is ending the debugging session.
+    shutting_down: bool,
     class_hierarchy: Vec<String>,
     local_watches: Vec<Watch>,
     global_watches: Vec<Watch>,
@@ -169,6 +172,7 @@ impl Debugger {
         Debugger {
             shutdown_sender: ctx,
             handle,
+            shutting_down: false,
             class_hierarchy: Vec::new(),
             local_watches: vec![Watch {
                 name: "ROOT".to_string(),
@@ -1094,6 +1098,13 @@ impl Debugger {
         }
     }
 
+    /// Unreal is ending the debugging session: tell the interface thread to exit.
+    ///
+    /// This is called on Unreal's thread with the global `DEBUGGER` lock held, so it must
+    /// not wait for the interface thread here: that thread may itself be blocked on the
+    /// debugger lock (e.g. in `dispatch_command`), which would deadlock. Instead the caller
+    /// must release the lock and then join the handle returned by
+    /// [`Debugger::take_shutdown_handle`] before returning control to Unreal.
     fn game_ended(&mut self) {
         log::info!("Game ended, shutting down debugger.");
         // Note that we don't bother sending an event to the adapter to tell it that
@@ -1101,6 +1112,7 @@ impl Debugger {
         // has closed. Sending the event would be difficult to guarantee because we'd
         // need to block here with some complex protocol to be 100% sure the adapter has
         // received the message before we continue with the shutdown process.
+        self.shutting_down = true;
 
         // Send the shutdown broadcast message to cause our thread to exit. This shouldn't
         // fail since the spawned thread owns the receiving end, but if it does we
@@ -1111,21 +1123,28 @@ impl Debugger {
         // the thread that does the DLL unload, triggered from DllMain).
         _ = self.shutdown_sender.unbounded_send(());
 
-        // Wait for the thread to exit before we return. If we get here then shutdown was
-        // initiated by a 'toggledebugger' command (if we had initiated shutdown from the
-        // adapter via a Disconnect message we'd have closed the response_channel before
-        // sending the 'stopdebugging' command and would not enter this block).
-        //
-        // When shutdown is initiated from toggledebugger we are running on the
-        // Unreal thread and not the spawned thread, so we are not blocking ourselves
-        // from exiting.
-        if let Some(h) = self.handle.take() {
-            match h.join() {
-                Ok(()) => (),
-                Err(e) => {
-                    log::error!("Error joining thread: {e:?}");
-                }
-            }
+        // The interface thread may be waiting in `dispatch_command` for a pending variable
+        // request that Unreal will never complete now. `shutting_down` was set while we hold
+        // the debugger lock, so this wakeup cannot be lost.
+        VARIABLE_REQUST_CONDVAR.notify_all();
+    }
+
+    /// Returns true once Unreal has started ending the debugging session.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down
+    }
+
+    /// If the debugging session is ending, take the interface thread's handle so the caller
+    /// can wait for it to exit.
+    ///
+    /// The handle must only be joined after the global `DEBUGGER` lock has been released.
+    /// If shutdown was initiated by a 'toggledebugger' command we are running on the Unreal
+    /// thread and not the spawned thread, so joining does not block the thread on itself.
+    pub fn take_shutdown_handle(&mut self) -> Option<JoinHandle<()>> {
+        if self.shutting_down {
+            self.handle.take()
+        } else {
+            None
         }
     }
 

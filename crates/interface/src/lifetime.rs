@@ -493,13 +493,39 @@ async fn handle_connection<T: SendToUnreal>(
     Ok(ConnectionResult::Disconnected)
 }
 
+/// Wait for the interface thread to exit after Unreal has ended the debugging session.
+///
+/// Must be called without holding the [`DEBUGGER`] lock: the interface thread may need
+/// that lock (or a wakeup from a thread that does) before it can observe the shutdown.
+///
+/// If Unreal ended the session from a callback made on the interface thread itself (e.g. a
+/// VA command sent while in a break), the thread cannot wait for itself; it will exit once
+/// it returns to its main loop and sees the shutdown message.
+pub(crate) fn join_interface_thread(handle: Option<thread::JoinHandle<()>>) {
+    if let Some(h) = handle {
+        if h.thread().id() == thread::current().id() {
+            log::info!("Session ended on the interface thread; it will exit on its own.");
+            return;
+        }
+        if let Err(e) = h.join() {
+            log::error!("Error joining thread: {e:?}");
+        }
+    }
+}
+
 fn dispatch_command(command: UnrealCommand) -> CommandAction {
     let mut hnd = DEBUGGER.lock().unwrap();
     loop {
         let dbg = hnd.as_mut().unwrap();
+        if dbg.is_shutting_down() {
+            // Unreal is ending the session and is waiting for this thread to exit. The
+            // pending request will never complete and we must not call back into Unreal.
+            log::info!("Debugger is shutting down, dropping command.");
+            return CommandAction::Nothing;
+        }
         if dbg.pending_variable_request() {
             // There is still an outstanding variable request. We can't do anything until
-            // this is finished.
+            // this is finished. We are woken when the request completes or on shutdown.
             log::info!("Waiting for variable request to complete...");
             hnd = VARIABLE_REQUST_CONDVAR.wait(hnd).unwrap();
         } else {
@@ -514,5 +540,186 @@ fn dispatch_command(command: UnrealCommand) -> CommandAction {
             log::error!("Not connected");
             CommandAction::Nothing
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for lock/wait cycles between Unreal's thread and the
+    //! interface thread. Each test runs under a watchdog so that a deadlock
+    //! fails the test instead of hanging the test suite.
+    use std::ffi::CString;
+    use std::sync::mpsc::{channel, RecvTimeoutError};
+    use std::time::Duration;
+
+    use common::{FrameIndex, StackTraceRequest};
+    use futures::executor::block_on;
+    use winapi::shared::ntdef::LPCWSTR;
+
+    use super::*;
+    use crate::api::{AddLineToLog, IPCSendCommandToVS, VACMD};
+    use crate::debugger::MAGIC_DISCONNECT_STRING;
+    use crate::{
+        consume_game_runtime_pending_commands, set_game_runtime_in_break,
+        GAME_RUNTIME_PENDING_COMMANDS,
+    };
+
+    const DEADLOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// These tests share the global debugger state, so they must not run concurrently.
+    static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Runs `f` on a separate thread and fails the test if it does not complete within
+    /// [`DEADLOCK_TIMEOUT`].
+    fn run_with_watchdog(f: impl FnOnce() + Send + 'static) {
+        let (tx, rx) = channel();
+        thread::spawn(move || {
+            f();
+            let _ = tx.send(());
+        });
+        match rx.recv_timeout(DEADLOCK_TIMEOUT) {
+            Ok(()) => (),
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("Deadlock: test did not complete within {DEADLOCK_TIMEOUT:?}")
+            }
+            Err(RecvTimeoutError::Disconnected) => panic!("Test body panicked"),
+        }
+    }
+
+    /// Installs a fresh global debugger whose interface thread runs `worker`. The worker
+    /// receives the shutdown receiver, like `main_loop` does. `setup` runs while the
+    /// debugger lock is still held, so the worker cannot observe the debugger before
+    /// it is fully configured.
+    fn install_debugger(
+        worker: impl FnOnce(UnboundedReceiver<()>) + Send + 'static,
+        setup: impl FnOnce(&mut Debugger),
+    ) {
+        let mut hnd = DEBUGGER.lock().unwrap();
+        let (ctx, crx) = unbounded();
+        let handle = thread::spawn(move || worker(crx));
+        let mut dbg = Debugger::new(ctx, Some(handle));
+        setup(&mut dbg);
+        hnd.replace(dbg);
+    }
+
+    fn reset_globals() {
+        DEBUGGER.lock().unwrap().take();
+        GAME_RUNTIME_PENDING_COMMANDS.lock().unwrap().clear();
+        set_game_runtime_in_break(false);
+    }
+
+    extern "C" fn noop_va_callback(_cmd: i32, _str: LPCWSTR) {}
+
+    /// Unreal's thread ends the session (`toggledebugger` -> magic detach log line) while the
+    /// interface thread is blocked in `dispatch_command` waiting for an outstanding variable
+    /// request. `AddLineToLog` must not wait for the interface thread to exit while holding
+    /// the debugger lock, and the interface thread must be woken up and stop waiting.
+    #[test]
+    fn detach_while_dispatch_waits_for_variable_request() {
+        run_with_watchdog(|| {
+            let _globals = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (etx, erx) = unbounded();
+            install_debugger(
+                |mut crx| {
+                    // A second adapter command arrives while the first one is still pending.
+                    dispatch_command(UnrealCommand::StackTrace(StackTraceRequest {
+                        start_frame: 0,
+                        levels: 0,
+                    }));
+                    // Then behave like the main loop: exit once told to shut down.
+                    block_on(crx.next());
+                },
+                |dbg| {
+                    dbg.new_connection(etx);
+                    // The adapter evaluated a new expression: an 'addwatch' was sent to Unreal
+                    // and the response is pending until Unreal unlocks the user watch list.
+                    let action = dbg
+                        .handle_command(UnrealCommand::Evaluate(
+                            FrameIndex::TOP_FRAME,
+                            "x".to_string(),
+                        ))
+                        .unwrap();
+                    assert!(matches!(action, CommandAction::Callback(_)));
+                    assert!(dbg.pending_variable_request());
+                },
+            );
+
+            // Unreal's thread: the debugger is being detached.
+            let line = CString::new(MAGIC_DISCONNECT_STRING).unwrap();
+            AddLineToLog(line.as_ptr());
+
+            drop(erx);
+            reset_globals();
+        });
+    }
+
+    /// VA interface: a command queued while the game was running (e.g. 'stopdebugging') is
+    /// executed from the game tick and Unreal synchronously reports `GameEnded`, while the
+    /// interface thread concurrently queues another command for the game thread. Running
+    /// queued commands must not hold the pending command lock, otherwise the interface
+    /// thread can never exit and `GameEnded` waits for it forever.
+    #[test]
+    fn va_game_ended_from_queued_command_while_interface_thread_queues() {
+        run_with_watchdog(|| {
+            let _globals = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            set_game_runtime_in_break(false);
+            let (go_tx, go_rx) = channel::<()>();
+            install_debugger(
+                move |mut crx| {
+                    go_rx.recv().unwrap();
+                    // The game is not in a break, so this command is queued for the next tick.
+                    VaDebugSendToUnreal::new(noop_va_callback).send_bytes(b"addbreakpoint A 1\0");
+                    block_on(crx.next());
+                },
+                |dbg| dbg.interface_type = InterfaceType::VA,
+            );
+
+            // Stand-in for the queued Unreal callback: Unreal processes the command and
+            // synchronously calls back into the interface to report that the game ended.
+            add_game_runtime_pending_command(move || {
+                go_tx.send(()).unwrap();
+                IPCSendCommandToVS(
+                    VACMD::GameEnded as i32,
+                    0,
+                    0,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                );
+            });
+
+            // Unreal's game thread tick (the relevant part of `IPCNotifyBeginTick`).
+            consume_game_runtime_pending_commands();
+
+            reset_globals();
+        });
+    }
+
+    /// VA interface: while the game is in a break, commands are sent to Unreal directly from
+    /// the interface thread (e.g. 'stopdebugging' after an adapter disconnect). If Unreal
+    /// reports `GameEnded` synchronously from that callback, the interface thread must not
+    /// wait for itself to exit.
+    #[test]
+    fn va_game_ended_reported_on_interface_thread() {
+        run_with_watchdog(|| {
+            let _globals = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let (done_tx, done_rx) = channel::<()>();
+            install_debugger(
+                move |mut crx| {
+                    // Stand-in for Unreal handling the command on this thread and calling back.
+                    IPCSendCommandToVS(
+                        VACMD::GameEnded as i32,
+                        0,
+                        0,
+                        std::ptr::null(),
+                        std::ptr::null(),
+                    );
+                    block_on(crx.next());
+                    done_tx.send(()).unwrap();
+                },
+                |dbg| dbg.interface_type = InterfaceType::VA,
+            );
+            done_rx.recv().unwrap();
+            reset_globals();
+        });
     }
 }
